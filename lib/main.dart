@@ -1,32 +1,24 @@
 import 'package:flutter/material.dart';
-import 'ui/flutter_dashboard_screen.dart';
-import 'core/contact_model.dart';
+import 'ui/smart_wizard_screen.dart';
 
 void main() {
-  runApp(const MyApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const SmartContactsApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+class SmartContactsApp extends StatelessWidget {
+  const SmartContactsApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Smart Contacts',
+      title: 'مدير جهات الاتصال الذكي',
       theme: ThemeData(
-        primarySwatch: Colors.teal,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
-      home: ContactsDashboardScreen(
-        contacts: [
-          AppContact(id: '1', displayName: 'د. عيادة الأمل', phones: ['0790000000']),
-        ],
-        tagStats: {'MED': 1, 'GEN': 0},
-        staleCandidates: [],
-        onSync: () {},
-        onExport: () {},
-      ),
+      home: const SmartWizardScreen(),
     );
   }
 }
