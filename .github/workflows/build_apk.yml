@@ -25,6 +25,9 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Generate Android & iOS platform scaffolding
+        run: flutter create . --org com.ayyash.smartcontacts
+
       - name: Install Dependencies
         run: flutter pub get
 
@@ -36,3 +39,4 @@ jobs:
         with:
           name: SmartContacts-Release-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+
