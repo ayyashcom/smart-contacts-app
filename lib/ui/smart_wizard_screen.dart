@@ -28,7 +28,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     _checkPermissionsAndFetch();
   }
 
-  // 1. جلب جهات الاتصال مع معالجة ذكية للأذونات
   Future<void> _checkPermissionsAndFetch() async {
     setState(() {
       _isLoading = true;
@@ -79,7 +78,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     }
   }
 
-  // 2. تشغيل المعالجة والفرز التفاعلي خطوة بخطوة
   Future<void> _runProcessingPipeline() async {
     setState(() {
       _isLoading = true;
@@ -103,7 +101,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         _errorLogs.add('خطأ أثناء معالجة ${item.displayName}: $err');
       }
 
-      // تحديث شريط التقدم كل 20 عنصر لتجنب ثقل الواجهة
       if (i % 20 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
@@ -113,12 +110,15 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       }
     }
 
+    // دمج المتطابقات وإزالة التكرار مع توحيد الأرقام
+    List<AppContact> merged = RulesEngine.deduplicateContacts(tempProcessed);
+
     setState(() {
-      _processedContacts = tempProcessed;
+      _processedContacts = merged;
       _tagStats = tags;
       _isLoading = false;
       _currentStep = 2;
-      _statusMessage = 'اكتملت المعالجة بنجاح!';
+      _statusMessage = 'اكتملت المعالجة! تم دمج الأسماء المتطابقة بنجاح.';
     });
   }
 
@@ -133,7 +133,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       ),
       body: Column(
         children: [
-          // شريط الخطوات التوضيحي
           Container(
             padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
             color: Colors.blueGrey[50],
@@ -146,11 +145,8 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
               ],
             ),
           ),
-
-          // شريط التقدم الحي والرسائل
           if (_isLoading)
             LinearProgressIndicator(value: _progressValue > 0 ? _progressValue : null, color: Colors.teal),
-
           Padding(
             padding: const EdgeInsets.all(10.0),
             child: Text(
@@ -159,8 +155,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
               textAlign: TextAlign.center,
             ),
           ),
-
-          // محتوى الخطوة الحالية
           Expanded(
             child: _currentStep == 0
                 ? _buildInitialAuditView()
@@ -168,8 +162,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                     ? _buildProcessingProgressView()
                     : _buildFinalReviewView(),
           ),
-
-          // شريط الأخطاء التنبيهي إن وجد
           if (_errorLogs.isNotEmpty)
             Container(
               padding: const EdgeInsets.all(8),
@@ -179,7 +171,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                   const Icon(Icons.warning_amber_rounded, color: Colors.orange),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('تم رصد ${_errorLogs.length} استثناء تم تخطيه بأمان لضمان سلامة بياناتك.',
+                    child: Text('تم تخطي ${_errorLogs.length} استثناء بأمان لضمان سلامة بياناتك.',
                         style: const TextStyle(fontSize: 12)),
                   ),
                 ],
@@ -201,7 +193,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     );
   }
 
-  // الواجهة 1: المعاينة الأولية
   Widget _buildInitialAuditView() {
     return Column(
       children: [
@@ -212,13 +203,21 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                Text('العدد المكتشف: ${_rawContacts.length}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                ElevatedButton.icon(
-                  onPressed: _isLoading ? null : _runProcessingPipeline,
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('بدء التنظيف والفرز'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                ),
+                Text('العدد: ${_rawContacts.length}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                if (_rawContacts.isEmpty)
+                  ElevatedButton.icon(
+                    onPressed: _checkPermissionsAndFetch,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('إعادة المحاولة'),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange[800], foregroundColor: Colors.white),
+                  )
+                else
+                  ElevatedButton.icon(
+                    onPressed: _isLoading ? null : _runProcessingPipeline,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('بدء التنظيف والفرز'),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                  ),
               ],
             ),
           ),
@@ -228,11 +227,10 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
             itemCount: _rawContacts.length,
             itemBuilder: (context, index) {
               var c = _rawContacts[index];
-              bool isSimple = c.displayName.isNotEmpty && c.phones.isNotEmpty;
               return ListTile(
                 leading: CircleAvatar(
-                  backgroundColor: isSimple ? Colors.green[100] : Colors.orange[100],
-                  child: Icon(isSimple ? Icons.check : Icons.priority_high, color: isSimple ? Colors.green[800] : Colors.orange[800]),
+                  backgroundColor: Colors.teal[50],
+                  child: Text('${index + 1}', style: const TextStyle(fontSize: 12)),
                 ),
                 title: Text(c.displayName),
                 subtitle: Text(c.phones.join(', ')),
@@ -244,7 +242,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     );
   }
 
-  // الواجهة 2: التقدم الحي
   Widget _buildProcessingProgressView() {
     return Center(
       child: Column(
@@ -260,7 +257,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     );
   }
 
-  // الواجهة 3: النتائج والتطبيق
   Widget _buildFinalReviewView() {
     return Column(
       children: [
@@ -271,20 +267,24 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
             children: _tagStats.entries.map((e) => Chip(label: Text('${e.key}: ${e.value}'))).toList(),
           ),
         ),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ElevatedButton.icon(
-              onPressed: () async {
-                await ContactsService.exportToCsv(_processedContacts, '/sdcard/Download/app_smart_contacts.csv');
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تصدير الملف إلى Download بنجاح!')));
-              },
-              icon: const Icon(Icons.download),
-              label: const Text('تصدير CSV'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey, foregroundColor: Colors.white),
-            ),
-          ],
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0),
+          child: Text(
+            'تم دمج المتطابقات! إجمالي الأسماء بعد الدمج: ${_processedContacts.length}',
+            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal),
+          ),
         ),
+        const SizedBox(height: 8),
+        ElevatedButton.icon(
+          onPressed: () async {
+            await ContactsService.exportToCsv(_processedContacts, '/sdcard/Download/app_smart_contacts.csv');
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم التصدير بنجاح إلى مجلد Download!')));
+          },
+          icon: const Icon(Icons.download),
+          label: const Text('تصدير CSV النظيف'),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey, foregroundColor: Colors.white),
+        ),
+        const Divider(),
         Expanded(
           child: ListView.builder(
             itemCount: _processedContacts.length,
@@ -293,7 +293,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
               return ListTile(
                 leading: Chip(label: Text(c.entityTag)),
                 title: Text(c.displayName),
-                subtitle: Text('EN: ${c.englishName} | ${c.phones.join(", ")}'),
+                subtitle: Text('EN: ${c.englishName}\nهواتف (${c.phones.length}): ${c.phones.join(", ")}'),
               );
             },
           ),
