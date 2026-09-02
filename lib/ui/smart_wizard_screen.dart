@@ -24,17 +24,20 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   Map<String, int> _tagStats = {};
   int _totalDuplicatesFound = 0;
 
+  // إدارة الحسابات والمصادر
+  List<Account> _availableAccounts = [];
+  String _selectedAccount = 'ALL';
+
   @override
   void initState() {
     super.initState();
     _checkPermissionsAndFetch();
   }
 
-  // جلب جهات الاتصال مع كامل الشروط المطلوبة للتعديل في أندرويد
   Future<void> _checkPermissionsAndFetch() async {
     setState(() {
       _isLoading = true;
-      _statusMessage = 'جاري التحقق من أذونات القراءة والكتابة...';
+      _statusMessage = 'جاري طلب الصلاحيات وفحص الحسابات المتوفرة...';
       _errorLogs.clear();
       _nativeContactsMap.clear();
     });
@@ -42,15 +45,25 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     try {
       bool granted = await FlutterContacts.requestPermission(readonly: false);
       if (granted) {
-        // تفعيل withPhoto: true و withAccounts: true للسماح بالتحديث في أندرويد
+        // جلب الحسابات المتوفرة على الهاتف (Google, Phone, SIM, etc.)
+        List<Account> accounts = await FlutterContacts.getAccounts();
+        
         List<Contact> deviceContacts = await FlutterContacts.getContacts(
           withProperties: true,
           withAccounts: true,
           withPhoto: true,
         );
 
+        // تصفية حسب الحساب المختار إن لم يكن الكل
+        List<Contact> filtered = deviceContacts;
+        if (_selectedAccount != 'ALL') {
+          filtered = deviceContacts.where((c) => 
+            c.accounts.any((a) => '${a.name} (${a.type})' == _selectedAccount)
+          ).toList();
+        }
+
         List<AppContact> loaded = [];
-        for (var dc in deviceContacts) {
+        for (var dc in filtered) {
           _nativeContactsMap[dc.id] = dc;
           List<String> phones = dc.phones
               .map((p) => p.number.trim())
@@ -65,9 +78,10 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         }
 
         setState(() {
+          _availableAccounts = accounts;
           _rawContacts = loaded;
           _isLoading = false;
-          _statusMessage = 'تم جلب ${_rawContacts.length} جهة اتصال بنجاح وجاهزة للتعديل الكامل.';
+          _statusMessage = 'تم قراءة ${_rawContacts.length} جهة اتصال جاهزة للفرز والدمج.';
         });
       } else {
         setState(() {
@@ -84,7 +98,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     }
   }
 
-  // مسار المعالجة والفرز
   Future<void> _runProcessingPipeline() async {
     setState(() {
       _isLoading = true;
@@ -112,12 +125,13 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       if (i % 25 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
-          _statusMessage = 'جاري الفرز: تم فحص ${i + 1} من أصل $total...';
+          _statusMessage = 'جاري الفحص المتقدم: تم تحليل ${i + 1} من أصل $total...';
         });
         await Future.delayed(const Duration(milliseconds: 2));
       }
     }
 
+    // دمج المتطابقات ثنائياً (أرقام الهواتف أولاً ثم تشابه الأسماء واللام والرموز)
     List<AppContact> merged = RulesEngine.deduplicateContacts(tempProcessed);
 
     int duplicatesCount = 0;
@@ -131,25 +145,24 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       _totalDuplicatesFound = duplicatesCount;
       _isLoading = false;
       _currentStep = 2;
-      _statusMessage = 'اكتمل الفرز! تم تجهيز ${_processedContacts.length} جهة اتصال.';
+      _statusMessage = 'اكتمل الفرز! تم تجهيز ${_processedContacts.length} جهة اتصال (المكررات المطلوب حذفها: $duplicatesCount).';
     });
   }
 
-  // المزامنة الحقيقية في الهاتف
   Future<void> _syncChangesToDevice() async {
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('تأكيد المزامنة المباشرة'),
         content: Text(
-          'سيتم تعديل تاجات وأسماء ${_processedContacts.length} جهة اتصال وحذف $_totalDuplicatesFound نسخة مكررة مباشرة في هاتفك.\n\nهل أنت متأكد من المتابعة؟',
+          'سيتم تحديث ${_processedContacts.length} جهة اتصال وحذف $_totalDuplicatesFound جهة مكررة نهائياً من هاتفك بعد دمج أرقامها.\n\nهل تريد البدء؟',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-            child: const Text('بدء التحديث المباشر'),
+            child: const Text('تأكيد وتطبيق'),
           ),
         ],
       ),
@@ -160,7 +173,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     setState(() {
       _isLoading = true;
       _progressValue = 0.0;
-      _statusMessage = 'جاري تطبيق التعديلات على ذاكرة الهاتف...';
+      _statusMessage = 'جاري تطبيق التعديلات ودمج السجلات...';
       _errorLogs.clear();
     });
 
@@ -201,7 +214,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       if (i % 20 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
-          _statusMessage = 'جاري التحديث: $updatedCount معدل | $deletedCount محذوف...';
+          _statusMessage = 'جاري التنفيذ: $updatedCount تم تحديثه | $deletedCount تم حذفه...';
         });
         await Future.delayed(const Duration(milliseconds: 2));
       }
@@ -209,7 +222,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
 
     setState(() {
       _isLoading = false;
-      _statusMessage = 'اكتملت العملية: نجح تعديل $updatedCount وحذف $deletedCount.';
+      _statusMessage = 'اكتملت العملية: نجح تعديل $updatedCount وحذف $deletedCount نسخة مكررة.';
     });
 
     if (mounted) {
@@ -219,14 +232,11 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
           title: const Text('تقرير المزامنة الفعلي'),
           content: Text(
             '✔ تم التحديث بنجاح: $updatedCount\n'
-            '✔ تم حذف المكررات: $deletedCount\n'
-            '✖ الأخطاء المتبقية: ${_errorLogs.length}',
+            '✔ تم حذف ودمج المكررات: $deletedCount\n'
+            '✖ الأخطاء: ${_errorLogs.length}',
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('إغلاق'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إغلاق')),
           ],
         ),
       );
@@ -268,36 +278,31 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         foregroundColor: Colors.white,
       ),
       body: SafeArea(
-        bottom: true, // حماية المساحة السفلية من التداخل مع شريط التنقل
+        bottom: true,
         child: Column(
           children: [
-            // شريط المراحل
             Container(
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
               color: Colors.blueGrey[50],
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildStepHeader(0, '1. المعاينة', Icons.visibility),
+                  _buildStepHeader(0, '1. المعاينة والمصدر', Icons.visibility),
                   _buildStepHeader(1, '2. المعالجة', Icons.tune),
                   _buildStepHeader(2, '3. النتائج والمزامنة', Icons.check_circle),
                 ],
               ),
             ),
-
             if (_isLoading)
               LinearProgressIndicator(value: _progressValue > 0 ? _progressValue : null, color: Colors.teal),
-
             Padding(
-              padding: const EdgeInsets.all(10.0),
+              padding: const EdgeInsets.all(8.0),
               child: Text(
                 _statusMessage,
                 style: TextStyle(fontSize: 13, color: Colors.blueGrey[800], fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
             ),
-
-            // المحتوى الرئيسي
             Expanded(
               child: _currentStep == 0
                   ? _buildInitialAuditView()
@@ -305,8 +310,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                       ? _buildProcessingProgressView()
                       : _buildFinalReviewView(),
             ),
-
-            // شريط الأخطاء إن وجد
             if (_errorLogs.isNotEmpty)
               InkWell(
                 onTap: _showErrorsModal,
@@ -318,15 +321,13 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                       const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: Text('تم تسجيل ${_errorLogs.length} استثناء (اضغط لمعاينة التفاصيل)',
+                        child: Text('تم تسجيل ${_errorLogs.length} ملاحظة (اضغط للمعاينة)',
                             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                       ),
                     ],
                   ),
                 ),
               ),
-
-            // شريط التوقيع في الأسفل بكامل الشاشة مع حماية البار السفلي
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 10),
@@ -338,7 +339,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                   color: Colors.white70,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  letterSpacing: 0.5,
                 ),
               ),
             ),
@@ -362,6 +362,37 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   Widget _buildInitialAuditView() {
     return Column(
       children: [
+        // اختيار مصدر الحسابات
+        if (_availableAccounts.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 4.0),
+            child: Row(
+              children: [
+                const Icon(Icons.account_circle_outlined, size: 20, color: Colors.blueGrey),
+                const SizedBox(width: 8),
+                const Text('المصدر: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                Expanded(
+                  child: DropdownButton<String>(
+                    isExpanded: true,
+                    value: _selectedAccount,
+                    items: [
+                      const DropdownMenuItem(value: 'ALL', child: Text('جميع الحسابات')),
+                      ..._availableAccounts.map((a) => DropdownMenuItem(
+                            value: '${a.name} (${a.type})',
+                            child: Text('${a.name} (${a.type})', overflow: TextOverflow.ellipsis),
+                          )),
+                    ],
+                    onChanged: (val) {
+                      if (val != null) {
+                        setState(() => _selectedAccount = val);
+                        _checkPermissionsAndFetch();
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
         Card(
           margin: const EdgeInsets.all(12),
           child: Padding(
@@ -374,14 +405,14 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                   ElevatedButton.icon(
                     onPressed: _checkPermissionsAndFetch,
                     icon: const Icon(Icons.refresh),
-                    label: const Text('منح الإذن والتحديث'),
+                    label: const Text('تحديث'),
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.orange[800], foregroundColor: Colors.white),
                   )
                 else
                   ElevatedButton.icon(
                     onPressed: _isLoading ? null : _runProcessingPipeline,
                     icon: const Icon(Icons.play_arrow),
-                    label: const Text('بدء التنظيف والفرز'),
+                    label: const Text('بدء التنظيف والدمج'),
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                   ),
               ],
@@ -436,7 +467,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
           child: Text(
-            'العدد بعد التنظيف: ${_processedContacts.length} (المكررات المطلوب حذفها: $_totalDuplicatesFound)',
+            'العدد الصافي: ${_processedContacts.length} (المكررات المطلوب حذفها بعد الدمج: $_totalDuplicatesFound)',
             style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal),
           ),
         ),

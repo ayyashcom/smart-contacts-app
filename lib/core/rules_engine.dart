@@ -13,9 +13,30 @@ class RulesEngine {
     'ة': 'h', 'ء': '', 'ئ': 'Y', 'ؤ': 'W'
   };
 
-  static String normalizeForMatching(String text) {
+  // 1. تنظيف الرقم وتوحيده للمقارنة (آخر 9 أرقام لتجاوز مفاتيح الدول والصفر الدولي)
+  static String normalizePhoneNumber(String phone) {
+    String digits = phone.replaceAll(RegExp(r'[^\d]'), '');
+    if (digits.length > 9) {
+      return digits.substring(digits.length - 9);
+    }
+    return digits;
+  }
+
+  // 2. تجريد الاسم من التاجات القديمة والرموز التعبيرية والهمزات و"الـ" التعريف
+  static String cleanDisplayName(String text) {
     if (text.trim().isEmpty) return '';
-    String clean = text.replaceAll(RegExp(r'\[.*?\]'), '').trim();
+    // إزالة أي تاجات مربعة مثل [SRV-MAINT] أو (GEN)
+    String clean = text.replaceAll(RegExp(r'\[.*?\]|\(.*?\)|<.*?>'), '');
+    // إزالة الرموز التعبيرية والخاصة
+    clean = clean.replaceAll(RegExp(r'[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]', unicode: true), '');
+    clean = clean.replaceAll(RegExp(r'[\*#_\-=+~|/\\:;!؟?]'), ' ');
+    return clean.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  static String normalizeForMatching(String text) {
+    String clean = cleanDisplayName(text);
+    if (clean.isEmpty) return '';
+
     clean = clean
         .replaceAll(RegExp(r'[أإآ]'), 'ا')
         .replaceAll('ة', 'ه')
@@ -34,9 +55,10 @@ class RulesEngine {
     return strippedWords.join(' ').toLowerCase().trim();
   }
 
-  static String transliterate(String arabicText) {
-    if (arabicText.trim().isEmpty) return '';
-    String clean = arabicText.replaceAll(RegExp(r'\[.*?\]'), '').trim();
+  static String transliterate(String text) {
+    String clean = cleanDisplayName(text);
+    if (clean.isEmpty) return '';
+
     StringBuffer buffer = StringBuffer();
     for (int i = 0; i < clean.length; i++) {
       String char = clean[i];
@@ -47,26 +69,25 @@ class RulesEngine {
 
   static String extractTag(String name, String organization) {
     String combined = '$name $organization'.toLowerCase();
-    if (combined.contains('دكتور') || combined.contains('د.') || combined.contains('dr') || combined.contains('مستشفى') || combined.contains('عيادة')) {
+    if (combined.contains('دكتور') || combined.contains('د.') || combined.contains('dr') || combined.contains('مستشفى') || combined.contains('عيادة') || combined.contains('صيدلية')) {
       return 'MED';
     }
-    if (combined.contains('صيانة') || combined.contains('ميكانيك') || combined.contains('كهربجي') || combined.contains('تصليح') || combined.contains('سباك')) {
+    if (combined.contains('صيانة') || combined.contains('ميكانيك') || combined.contains('كهربجي') || combined.contains('تصليح') || combined.contains('سباك') || combined.contains('منجد') || combined.contains('حداد') || combined.contains('نجار')) {
       return 'MAINT';
     }
-    if (combined.contains('شركة') || combined.contains('مكتب') || combined.contains('مهندس') || combined.contains('مؤسسة')) {
+    if (combined.contains('شركة') || combined.contains('مكتب') || combined.contains('مهندس') || combined.contains('مؤسسة') || combined.contains('تجارة') || combined.contains('معرض')) {
       return 'BIZ';
     }
-    if (combined.contains('طوارئ') || combined.contains('دفاع مدني') || combined.contains('شرطة') || combined.contains('امن') || combined.contains('انضباط')) {
+    if (combined.contains('طوارئ') || combined.contains('دفاع مدني') || combined.contains('شرطة') || combined.contains('امن') || combined.contains('انضباط') || combined.contains('خدمة')) {
       return 'SRV-GEN';
     }
     return 'GEN';
   }
 
   static AppContact processContact(AppContact contact, {String organization = ''}) {
+    contact.displayName = cleanDisplayName(contact.displayName);
     contact.entityTag = extractTag(contact.displayName, organization);
-    if (contact.englishName.isEmpty) {
-      contact.englishName = transliterate(contact.displayName);
-    }
+    contact.englishName = transliterate(contact.displayName);
 
     List<String> normalizedPhones = [];
     for (var phone in contact.phones) {
@@ -79,34 +100,65 @@ class RulesEngine {
     return contact;
   }
 
+  // محرك الفحص والدمج الثنائي: بالرقم أولاً، ثم بالاسم المطبع
   static List<AppContact> deduplicateContacts(List<AppContact> contacts) {
-    Map<String, AppContact> uniqueMap = {};
+    Map<String, AppContact> phoneRegistry = {};
+    Map<String, AppContact> nameRegistry = {};
+    List<AppContact> mergedList = [];
 
     for (var contact in contacts) {
-      String normKey = normalizeForMatching(contact.displayName);
-      if (normKey.isEmpty && contact.phones.isNotEmpty) {
-        normKey = contact.phones.first;
+      AppContact? matchedContact;
+
+      // أ. فحص التطابق بأرقام الهواتف
+      for (var p in contact.phones) {
+        String pKey = normalizePhoneNumber(p);
+        if (pKey.isNotEmpty && phoneRegistry.containsKey(pKey)) {
+          matchedContact = phoneRegistry[pKey];
+          break;
+        }
       }
 
-      if (uniqueMap.containsKey(normKey)) {
-        var existing = uniqueMap[normKey]!;
+      // ب. إذا لم يتطابق بالرقم، نفحص تطابق الاسم المجرّد
+      if (matchedContact == null) {
+        String nKey = normalizeForMatching(contact.displayName);
+        if (nKey.isNotEmpty && nameRegistry.containsKey(nKey)) {
+          matchedContact = nameRegistry[nKey];
+        }
+      }
+
+      if (matchedContact != null) {
+        // دمج أرقام الهاتف
         for (var p in contact.phones) {
-          if (!existing.phones.contains(p)) {
-            existing.phones.add(p);
+          if (!matchedContact.phones.contains(p)) {
+            matchedContact.phones.add(p);
           }
+          String pKey = normalizePhoneNumber(p);
+          if (pKey.isNotEmpty) phoneRegistry[pKey] = matchedContact;
         }
-        // تسجيل معرف السجل المكرر لحذفه لاحقاً من الهاتف
-        if (contact.id != existing.id && !existing.duplicateIdsToDelete.contains(contact.id)) {
-          existing.duplicateIdsToDelete.add(contact.id);
+
+        // تسجيل ID السجل الزائد للحذف
+        if (contact.id != matchedContact.id && !matchedContact.duplicateIdsToDelete.contains(contact.id)) {
+          matchedContact.duplicateIdsToDelete.add(contact.id);
         }
-        if (contact.displayName.length > existing.displayName.length) {
-          existing.displayName = contact.displayName;
-          existing.englishName = contact.englishName;
+
+        // الاحتفاظ بالاسم الأوضح والأطول
+        if (contact.displayName.length > matchedContact.displayName.length) {
+          matchedContact.displayName = contact.displayName;
+          matchedContact.englishName = contact.englishName;
+          matchedContact.entityTag = contact.entityTag;
         }
       } else {
-        uniqueMap[normKey] = contact;
+        // إدخال جهة جديدة وتسجيل أرقامها واسمها في السجلات
+        for (var p in contact.phones) {
+          String pKey = normalizePhoneNumber(p);
+          if (pKey.isNotEmpty) phoneRegistry[pKey] = contact;
+        }
+        String nKey = normalizeForMatching(contact.displayName);
+        if (nKey.isNotEmpty) nameRegistry[nKey] = contact;
+        mergedList.add(contact);
       }
     }
-    return uniqueMap.values.toList();
+
+    return mergedList;
   }
 }
