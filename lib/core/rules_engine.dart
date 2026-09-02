@@ -13,20 +13,14 @@ class RulesEngine {
     'ة': 'h', 'ء': '', 'ئ': 'Y', 'ؤ': 'W'
   };
 
-  // 1. تطبيع النص العربي وتجريد "الـ" التعريف للمقارنة والمطابقة
   static String normalizeForMatching(String text) {
     if (text.trim().isEmpty) return '';
-
-    // إزالة التاجات السابقة والأقواس
     String clean = text.replaceAll(RegExp(r'\[.*?\]'), '').trim();
-
-    // توحيد الألف والياء والتاء المربوطة
     clean = clean
         .replaceAll(RegExp(r'[أإآ]'), 'ا')
         .replaceAll('ة', 'ه')
         .replaceAll('ى', 'ي');
 
-    // تقسيم النص لكلمات وحذف "ال" التعريف من بداية أي كلمة تتجاوز 3 أحرف
     List<String> words = clean.split(RegExp(r'\s+'));
     List<String> strippedWords = [];
 
@@ -37,15 +31,12 @@ class RulesEngine {
         strippedWords.add(w);
       }
     }
-
     return strippedWords.join(' ').toLowerCase().trim();
   }
 
-  // 2. التحويل اللاتيني الصوتي
   static String transliterate(String arabicText) {
     if (arabicText.trim().isEmpty) return '';
     String clean = arabicText.replaceAll(RegExp(r'\[.*?\]'), '').trim();
-
     StringBuffer buffer = StringBuffer();
     for (int i = 0; i < clean.length; i++) {
       String char = clean[i];
@@ -54,10 +45,8 @@ class RulesEngine {
     return buffer.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
-  // 3. استخراج التاج
   static String extractTag(String name, String organization) {
     String combined = '$name $organization'.toLowerCase();
-
     if (combined.contains('دكتور') || combined.contains('د.') || combined.contains('dr') || combined.contains('مستشفى') || combined.contains('عيادة')) {
       return 'MED';
     }
@@ -73,10 +62,8 @@ class RulesEngine {
     return 'GEN';
   }
 
-  // 4. معالجة وتدقيق جهة الاتصال الفردية
   static AppContact processContact(AppContact contact, {String organization = ''}) {
     contact.entityTag = extractTag(contact.displayName, organization);
-
     if (contact.englishName.isEmpty) {
       contact.englishName = transliterate(contact.displayName);
     }
@@ -89,31 +76,29 @@ class RulesEngine {
       }
     }
     contact.phones = normalizedPhones;
-
     return contact;
   }
 
-  // 5. دمج المكررات عبر مقارنة الاسم المطبع وأرقام الهواتف
   static List<AppContact> deduplicateContacts(List<AppContact> contacts) {
     Map<String, AppContact> uniqueMap = {};
 
     for (var contact in contacts) {
       String normKey = normalizeForMatching(contact.displayName);
-
-      // إذا لم يتوفر اسم واضح، اعتمد على الرقم الأول كمفتاح فريد
       if (normKey.isEmpty && contact.phones.isNotEmpty) {
         normKey = contact.phones.first;
       }
 
       if (uniqueMap.containsKey(normKey)) {
-        // دمج أرقام الهواتف بدون تكرار
         var existing = uniqueMap[normKey]!;
         for (var p in contact.phones) {
           if (!existing.phones.contains(p)) {
             existing.phones.add(p);
           }
         }
-        // الاحتفاظ بالاسم الأطول والأكثر تفصيلاً
+        // تسجيل معرف السجل المكرر لحذفه لاحقاً من الهاتف
+        if (contact.id != existing.id && !existing.duplicateIdsToDelete.contains(contact.id)) {
+          existing.duplicateIdsToDelete.add(contact.id);
+        }
         if (contact.displayName.length > existing.displayName.length) {
           existing.displayName = contact.displayName;
           existing.englishName = contact.englishName;
@@ -122,7 +107,6 @@ class RulesEngine {
         uniqueMap[normKey] = contact;
       }
     }
-
     return uniqueMap.values.toList();
   }
 }

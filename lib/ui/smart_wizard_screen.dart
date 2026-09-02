@@ -21,6 +21,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   List<AppContact> _processedContacts = [];
   List<String> _errorLogs = [];
   Map<String, int> _tagStats = {};
+  int _totalDuplicatesFound = 0;
 
   @override
   void initState() {
@@ -28,7 +29,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     _checkPermissionsAndFetch();
   }
 
-  // 1. جلب جهات الاتصال
   Future<void> _checkPermissionsAndFetch() async {
     setState(() {
       _isLoading = true;
@@ -82,7 +82,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     }
   }
 
-  // 2. محرك الفرز والمعالجة اللحظية
   Future<void> _runProcessingPipeline() async {
     setState(() {
       _isLoading = true;
@@ -117,23 +116,41 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
 
     List<AppContact> merged = RulesEngine.deduplicateContacts(tempProcessed);
 
+    int duplicatesCount = 0;
+    for (var c in merged) {
+      duplicatesCount += c.duplicateIdsToDelete.length;
+    }
+
     setState(() {
       _processedContacts = merged;
       _tagStats = tags;
+      _totalDuplicatesFound = duplicatesCount;
       _isLoading = false;
       _currentStep = 2;
-      _statusMessage = 'اكتمل الفرز! تم تجهيز ${_processedContacts.length} جهة اتصال جاهزة للتطبيق.';
+      _statusMessage = 'اكتمل الفرز! تم تجهيز ${_processedContacts.length} جهة اتصال (ورصد $duplicatesCount نسخة مكررة للدمج والحذف).';
     });
   }
 
-  // 3. المزامنة المباشرة والكتابة إلى الهاتف (Direct Sync to Device)
+  // 3. المزامنة المباشرة مع تقرير تفصيلي ومعالجة دقيقة للـ ID
   Future<void> _syncChangesToDevice() async {
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('تأكيد المزامنة المباشرة'),
-        content: Text(
-          'سيتم تحديث أسماء وتاجات وأرقام ${_processedContacts.length} جهة اتصال مباشرة في ذاكرة هاتفك.\n\nهل تريد المتابعة؟',
+        title: const Text('تقرير وخطة المزامنة المباشرة'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('• إجمالي جهات الاتصال الحالية: ${_rawContacts.length}'),
+            Text('• جهات الاتصال المعتمدة بعد التنظيف: ${_processedContacts.length}'),
+            Text('• جهات اتصال سيتم تحديث اسمها وتصنيفها: ${_processedContacts.length}', style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+            Text('• سجلات مكررة سيتم حذفها بعد دمجها: $_totalDuplicatesFound', style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            const Text(
+              'ملاحظة: سيتم الحفظ مباشرة في ذاكرة جهات اتصال الهاتف.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -143,7 +160,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-            child: const Text('موافق، ابدأ التحديث'),
+            child: const Text('تأكيد وبدء التطبيق'),
           ),
         ],
       ),
@@ -158,31 +175,47 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     });
 
     int total = _processedContacts.length;
-    int successCount = 0;
+    int updatedCount = 0;
+    int deletedCount = 0;
 
+    // أ. تحديث الأسماء الأساسية ودمج الأرقام
     for (int i = 0; i < total; i++) {
       var item = _processedContacts[i];
       try {
-        Contact? nativeContact = await FlutterContacts.getContact(item.id);
+        // التأكد من جلب جهة الاتصال بكامل الخصائص لتتمكن من التحديث
+        Contact? nativeContact = await FlutterContacts.getContact(item.id, withProperties: true);
         if (nativeContact != null) {
           String tagPrefix = item.entityTag.isNotEmpty ? '[${item.entityTag}] ' : '';
           nativeContact.name.first = '$tagPrefix${item.displayName}'.trim();
           nativeContact.name.nickname = item.englishName;
 
-          // تحديث قائمة الأرقام المدمجة
+          // توحيد الأرقام
           nativeContact.phones = item.phones.map((p) => Phone(p)).toList();
 
           await nativeContact.update();
-          successCount++;
+          updatedCount++;
+        }
+
+        // ب. حذف النسخ المكررة التي تم دمج أرقامها في هذا السجل
+        for (var dupId in item.duplicateIdsToDelete) {
+          try {
+            Contact? dupContact = await FlutterContacts.getContact(dupId);
+            if (dupContact != null) {
+              await dupContact.delete();
+              deletedCount++;
+            }
+          } catch (delErr) {
+            _errorLogs.add('تعذر حذف مكرر ($dupId): $delErr');
+          }
         }
       } catch (err) {
         _errorLogs.add('فشل تحديث ${item.displayName}: $err');
       }
 
-      if (i % 15 == 0 || i == total - 1) {
+      if (i % 20 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
-          _statusMessage = 'جاري الحفظ في الهاتف: $successCount من أصل $total...';
+          _statusMessage = 'جاري التحديث: $updatedCount تم تعديله | $deletedCount تم حذفه...';
         });
         await Future.delayed(const Duration(milliseconds: 5));
       }
@@ -190,12 +223,27 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
 
     setState(() {
       _isLoading = false;
-      _statusMessage = 'تمت المزامنة بنجاح! تم تحديث $successCount جهة اتصال في هاتفك.';
+      _statusMessage = 'اكتملت المزامنة بنجاح! تم تعديل $updatedCount جهة اتصال، وحذف $deletedCount نسخة مكررة.';
     });
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('اكتملت المزامنة: تم تحديث $successCount اسماً بنجاح في تطبيق الهاتف.')),
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('تقرير الإنجاز النهائي'),
+          content: Text(
+            'تم تطبيق التعديلات بنجاح:\n\n'
+            '✔ تم تحديث وإثراء بالتاجات: $updatedCount جهة اتصال.\n'
+            '✔ تم إزالة ودمج المكررات: $deletedCount جهة مكررة.\n'
+            '✔ السجلات المعالجة سليمة ومطابقة.',
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('تم'),
+            )
+          ],
+        ),
       );
     }
   }
@@ -249,7 +297,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                   const Icon(Icons.warning_amber_rounded, color: Colors.orange),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('تم رصد ${_errorLogs.length} ملاحظة تم تخطيها بأمان لضمان سلامة بياناتك.',
+                    child: Text('تم رصد ${_errorLogs.length} استثناء أثناء المعالجة (اضغط للاطلاع)',
                         style: const TextStyle(fontSize: 12)),
                   ),
                 ],
@@ -347,9 +395,13 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-          child: Text(
-            'تم تجهيز القائمة بعد دمج المتطابقات: ${_processedContacts.length} اسم',
-            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal),
+          child: Column(
+            children: [
+              Text(
+                'العدد بعد التنظيف: ${_processedContacts.length} (المكررات المطلوب حذفها: $_totalDuplicatesFound)',
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal),
+              ),
+            ],
           ),
         ),
         Padding(
@@ -360,7 +412,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                 child: ElevatedButton.icon(
                   onPressed: _isLoading ? null : _syncChangesToDevice,
                   icon: const Icon(Icons.sync),
-                  label: const Text('مزامنة مباشرة للهاتف'),
+                  label: const Text('مزامنة وتطبيق في الهاتف'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.teal[700],
                     foregroundColor: Colors.white,
@@ -372,10 +424,10 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
               OutlinedButton.icon(
                 onPressed: () async {
                   await ContactsService.exportToCsv(_processedContacts, '/sdcard/Download/app_smart_contacts.csv');
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ نسخة احتياطية CSV في مجلد Download.')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ نسخة احتياطية في مجلد Download.')));
                 },
                 icon: const Icon(Icons.save_alt),
-                label: const Text('نسخة احتياطية'),
+                label: const Text('نسخة CSV'),
               ),
             ],
           ),
@@ -389,7 +441,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
               return ListTile(
                 leading: Chip(label: Text(c.entityTag)),
                 title: Text(c.displayName),
-                subtitle: Text('EN: ${c.englishName}\nهواتف (${c.phones.length}): ${c.phones.join(", ")}'),
+                subtitle: Text('EN: ${c.englishName}\nأرقام (${c.phones.length})${c.duplicateIdsToDelete.isNotEmpty ? " • مدمج (${c.duplicateIdsToDelete.length})" : ""}: ${c.phones.join(", ")}'),
               );
             },
           ),

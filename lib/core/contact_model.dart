@@ -1,29 +1,21 @@
 class AppContact {
-  final String id;
+  String id;
   String displayName;
-  String originalName;
   String englishName;
   String entityTag;
   List<String> phones;
   String lastContactDate;
-  String contactChannel;
-  String whatsAppStatus;
-  bool isCandidateForDeletion;
-  String notes;
+  List<String> duplicateIdsToDelete; // المعرفات التابعة التي تم دمجها لحذفها لاحقاً
 
   AppContact({
     required this.id,
     required this.displayName,
-    this.originalName = '',
     this.englishName = '',
-    this.entityTag = '',
+    this.entityTag = 'GEN',
     required this.phones,
     this.lastContactDate = '',
-    this.contactChannel = '',
-    this.whatsAppStatus = 'Unknown',
-    this.isCandidateForDeletion = false,
-    this.notes = '',
-  });
+    List<String>? duplicateIdsToDelete,
+  }) : duplicateIdsToDelete = duplicateIdsToDelete ?? [];
 
   Map<String, dynamic> toMap() {
     return {
@@ -31,11 +23,8 @@ class AppContact {
       'displayName': displayName,
       'englishName': englishName,
       'entityTag': entityTag,
-      'phones': phones,
+      'phones': phones.join(';'),
       'lastContactDate': lastContactDate,
-      'whatsAppStatus': whatsAppStatus,
-      'isCandidateForDeletion': isCandidateForDeletion,
-      'notes': notes,
     };
   }
 }
