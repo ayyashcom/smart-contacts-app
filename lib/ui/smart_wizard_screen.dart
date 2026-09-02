@@ -18,14 +18,15 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   double _progressValue = 0.0;
 
   Map<String, Contact> _nativeContactsMap = {};
+  List<Contact> _allDeviceContacts = [];
   List<AppContact> _rawContacts = [];
   List<AppContact> _processedContacts = [];
   List<String> _errorLogs = [];
   Map<String, int> _tagStats = {};
   int _totalDuplicatesFound = 0;
 
-  // إدارة الحسابات والمصادر
-  List<Account> _availableAccounts = [];
+  // الحسابات المكتشفة ديناميكياً
+  Set<String> _detectedAccountLabels = {};
   String _selectedAccount = 'ALL';
 
   @override
@@ -37,7 +38,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   Future<void> _checkPermissionsAndFetch() async {
     setState(() {
       _isLoading = true;
-      _statusMessage = 'جاري طلب الصلاحيات وفحص الحسابات المتوفرة...';
+      _statusMessage = 'جاري طلب الصلاحيات وفحص جهات الاتصال...';
       _errorLogs.clear();
       _nativeContactsMap.clear();
     });
@@ -45,44 +46,25 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     try {
       bool granted = await FlutterContacts.requestPermission(readonly: false);
       if (granted) {
-        // جلب الحسابات المتوفرة على الهاتف (Google, Phone, SIM, etc.)
-        List<Account> accounts = await FlutterContacts.getAccounts();
-        
         List<Contact> deviceContacts = await FlutterContacts.getContacts(
           withProperties: true,
           withAccounts: true,
           withPhoto: true,
         );
 
-        // تصفية حسب الحساب المختار إن لم يكن الكل
-        List<Contact> filtered = deviceContacts;
-        if (_selectedAccount != 'ALL') {
-          filtered = deviceContacts.where((c) => 
-            c.accounts.any((a) => '${a.name} (${a.type})' == _selectedAccount)
-          ).toList();
+        _allDeviceContacts = deviceContacts;
+        Set<String> accountsFound = {};
+
+        for (var c in deviceContacts) {
+          for (var a in c.accounts) {
+            String label = '${a.name} (${a.type})'.trim();
+            if (label.isNotEmpty && label != ' ()') {
+              accountsFound.add(label);
+            }
+          }
         }
 
-        List<AppContact> loaded = [];
-        for (var dc in filtered) {
-          _nativeContactsMap[dc.id] = dc;
-          List<String> phones = dc.phones
-              .map((p) => p.number.trim())
-              .where((p) => p.isNotEmpty)
-              .toList();
-
-          loaded.add(AppContact(
-            id: dc.id,
-            displayName: dc.displayName.isEmpty ? 'جهة اتصال بدون اسم' : dc.displayName,
-            phones: phones,
-          ));
-        }
-
-        setState(() {
-          _availableAccounts = accounts;
-          _rawContacts = loaded;
-          _isLoading = false;
-          _statusMessage = 'تم قراءة ${_rawContacts.length} جهة اتصال جاهزة للفرز والدمج.';
-        });
+        _filterAndPopulateRawContacts(accountsFound);
       } else {
         setState(() {
           _isLoading = false;
@@ -96,6 +78,39 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         _errorLogs.add('Fetch Error: $e');
       });
     }
+  }
+
+  void _filterAndPopulateRawContacts(Set<String> accountsFound) {
+    List<Contact> filtered = _allDeviceContacts;
+    if (_selectedAccount != 'ALL') {
+      filtered = _allDeviceContacts.where((c) =>
+        c.accounts.any((a) => '${a.name} (${a.type})'.trim() == _selectedAccount)
+      ).toList();
+    }
+
+    _nativeContactsMap.clear();
+    List<AppContact> loaded = [];
+
+    for (var dc in filtered) {
+      _nativeContactsMap[dc.id] = dc;
+      List<String> phones = dc.phones
+          .map((p) => p.number.trim())
+          .where((p) => p.isNotEmpty)
+          .toList();
+
+      loaded.add(AppContact(
+        id: dc.id,
+        displayName: dc.displayName.isEmpty ? 'جهة اتصال بدون اسم' : dc.displayName,
+        phones: phones,
+      ));
+    }
+
+    setState(() {
+      _detectedAccountLabels = accountsFound;
+      _rawContacts = loaded;
+      _isLoading = false;
+      _statusMessage = 'تم قراءة ${_rawContacts.length} جهة اتصال جاهزة للفرز والدمج.';
+    });
   }
 
   Future<void> _runProcessingPipeline() async {
@@ -131,7 +146,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       }
     }
 
-    // دمج المتطابقات ثنائياً (أرقام الهواتف أولاً ثم تشابه الأسماء واللام والرموز)
     List<AppContact> merged = RulesEngine.deduplicateContacts(tempProcessed);
 
     int duplicatesCount = 0;
@@ -362,8 +376,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   Widget _buildInitialAuditView() {
     return Column(
       children: [
-        // اختيار مصدر الحسابات
-        if (_availableAccounts.isNotEmpty)
+        if (_detectedAccountLabels.isNotEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 4.0),
             child: Row(
@@ -377,15 +390,15 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                     value: _selectedAccount,
                     items: [
                       const DropdownMenuItem(value: 'ALL', child: Text('جميع الحسابات')),
-                      ..._availableAccounts.map((a) => DropdownMenuItem(
-                            value: '${a.name} (${a.type})',
-                            child: Text('${a.name} (${a.type})', overflow: TextOverflow.ellipsis),
+                      ..._detectedAccountLabels.map((acc) => DropdownMenuItem(
+                            value: acc,
+                            child: Text(acc, overflow: TextOverflow.ellipsis),
                           )),
                     ],
                     onChanged: (val) {
                       if (val != null) {
                         setState(() => _selectedAccount = val);
-                        _checkPermissionsAndFetch();
+                        _filterAndPopulateRawContacts(_detectedAccountLabels);
                       }
                     },
                   ),
