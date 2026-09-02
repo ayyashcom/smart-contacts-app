@@ -17,7 +17,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   String _statusMessage = 'جاهز للبدء';
   double _progressValue = 0.0;
 
-  // الاحتفاظ بكائنات النظام الأصلية لتجنب فشل البحث بالـ ID
   Map<String, Contact> _nativeContactsMap = {};
   List<AppContact> _rawContacts = [];
   List<AppContact> _processedContacts = [];
@@ -31,11 +30,11 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     _checkPermissionsAndFetch();
   }
 
-  // طلب إذن القراءة والكتابة الصريح (readonly: false)
+  // 1. جلب جهات الاتصال مع تفعيل withAccounts: true للسماح بالتعديل في أندرويد
   Future<void> _checkPermissionsAndFetch() async {
     setState(() {
       _isLoading = true;
-      _statusMessage = 'جاري التحقق من أذونات القراءة والكتابة الكاملة...';
+      _statusMessage = 'جاري طلب الصلاحيات وربط الحسابات...';
       _errorLogs.clear();
       _nativeContactsMap.clear();
     });
@@ -45,6 +44,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       if (granted) {
         List<Contact> deviceContacts = await FlutterContacts.getContacts(
           withProperties: true,
+          withAccounts: true, // ضروري جداً في أندرويد للسماح بالتحديث
           withPhoto: false,
         );
 
@@ -66,7 +66,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         setState(() {
           _rawContacts = loaded;
           _isLoading = false;
-          _statusMessage = 'تم جلب ${_rawContacts.length} جهة اتصال بنجاح مع صلاحية التعديل.';
+          _statusMessage = 'تم جلب ${_rawContacts.length} جهة اتصال بنجاح مع ربط الحسابات.';
         });
       } else {
         setState(() {
@@ -77,12 +77,13 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     } catch (e) {
       setState(() {
         _isLoading = false;
-        _statusMessage = 'خطأ أثناء طلب الصلاحيات: $e';
-        _errorLogs.add('Permission Failure: $e');
+        _statusMessage = 'خطأ أثناء القراءة: $e';
+        _errorLogs.add('Permission/Fetch Error: $e');
       });
     }
   }
 
+  // 2. خط أنابيب المعالجة والفرز
   Future<void> _runProcessingPipeline() async {
     setState(() {
       _isLoading = true;
@@ -133,7 +134,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     });
   }
 
-  // المزامنة الحقيقية باستخدام الكائنات الأصلية المحملة
+  // 3. المزامنة المباشرة
   Future<void> _syncChangesToDevice() async {
     bool? confirm = await showDialog<bool>(
       context: context,
@@ -158,7 +159,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     setState(() {
       _isLoading = true;
       _progressValue = 0.0;
-      _statusMessage = 'جاري تطبيق التعديلات على ذاكرة الهاتف...';
+      _statusMessage = 'جاري تطبيق التعديلات على الهاتف...';
       _errorLogs.clear();
     });
 
@@ -184,7 +185,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         }
       }
 
-      // حذف النسخ المكررة
       for (var dupId in item.duplicateIdsToDelete) {
         Contact? dupNative = _nativeContactsMap[dupId];
         if (dupNative != null) {
@@ -197,10 +197,10 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         }
       }
 
-      if (i % 15 == 0 || i == total - 1) {
+      if (i % 20 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
-          _statusMessage = 'جاري التحديث الفعلي: $updatedCount معدل | $deletedCount محذوف...';
+          _statusMessage = 'جاري التحديث: $updatedCount معدل | $deletedCount محذوف...';
         });
         await Future.delayed(const Duration(milliseconds: 2));
       }
@@ -308,7 +308,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                     const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text('تم تسجيل ${_errorLogs.length} استثناء أثناء العمل (اضغط هنا لمعاينة التفاصيل)',
+                      child: Text('تم تسجيل ${_errorLogs.length} استثناء (اضغط لمعاينة التفاصيل)',
                           style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                     ),
                   ],
