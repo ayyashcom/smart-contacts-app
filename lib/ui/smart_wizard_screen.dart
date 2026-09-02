@@ -28,6 +28,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     _checkPermissionsAndFetch();
   }
 
+  // 1. جلب جهات الاتصال
   Future<void> _checkPermissionsAndFetch() async {
     setState(() {
       _isLoading = true;
@@ -45,7 +46,10 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         List<AppContact> loaded = [];
         for (var dc in deviceContacts) {
           try {
-            List<String> phones = dc.phones.map((p) => p.number.trim()).where((p) => p.isNotEmpty).toList();
+            List<String> phones = dc.phones
+                .map((p) => p.number.trim())
+                .where((p) => p.isNotEmpty)
+                .toList();
             if (dc.displayName.isNotEmpty || phones.isNotEmpty) {
               loaded.add(AppContact(
                 id: dc.id,
@@ -78,6 +82,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     }
   }
 
+  // 2. محرك الفرز والمعالجة اللحظية
   Future<void> _runProcessingPipeline() async {
     setState(() {
       _isLoading = true;
@@ -101,7 +106,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         _errorLogs.add('خطأ أثناء معالجة ${item.displayName}: $err');
       }
 
-      if (i % 20 == 0 || i == total - 1) {
+      if (i % 25 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
           _statusMessage = 'جاري الفرز: تم فحص ${i + 1} من أصل $total جهة اتصال...';
@@ -110,7 +115,6 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       }
     }
 
-    // دمج المتطابقات وإزالة التكرار مع توحيد الأرقام
     List<AppContact> merged = RulesEngine.deduplicateContacts(tempProcessed);
 
     setState(() {
@@ -118,8 +122,82 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       _tagStats = tags;
       _isLoading = false;
       _currentStep = 2;
-      _statusMessage = 'اكتملت المعالجة! تم دمج الأسماء المتطابقة بنجاح.';
+      _statusMessage = 'اكتمل الفرز! تم تجهيز ${_processedContacts.length} جهة اتصال جاهزة للتطبيق.';
     });
+  }
+
+  // 3. المزامنة المباشرة والكتابة إلى الهاتف (Direct Sync to Device)
+  Future<void> _syncChangesToDevice() async {
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تأكيد المزامنة المباشرة'),
+        content: Text(
+          'سيتم تحديث أسماء وتاجات وأرقام ${_processedContacts.length} جهة اتصال مباشرة في ذاكرة هاتفك.\n\nهل تريد المتابعة؟',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            child: const Text('موافق، ابدأ التحديث'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() {
+      _isLoading = true;
+      _progressValue = 0.0;
+      _statusMessage = 'جاري مزامنة وتحديث الأسماء في هاتفك...';
+    });
+
+    int total = _processedContacts.length;
+    int successCount = 0;
+
+    for (int i = 0; i < total; i++) {
+      var item = _processedContacts[i];
+      try {
+        Contact? nativeContact = await FlutterContacts.getContact(item.id);
+        if (nativeContact != null) {
+          String tagPrefix = item.entityTag.isNotEmpty ? '[${item.entityTag}] ' : '';
+          nativeContact.name.first = '$tagPrefix${item.displayName}'.trim();
+          nativeContact.name.nickname = item.englishName;
+
+          // تحديث قائمة الأرقام المدمجة
+          nativeContact.phones = item.phones.map((p) => Phone(p)).toList();
+
+          await nativeContact.update();
+          successCount++;
+        }
+      } catch (err) {
+        _errorLogs.add('فشل تحديث ${item.displayName}: $err');
+      }
+
+      if (i % 15 == 0 || i == total - 1) {
+        setState(() {
+          _progressValue = (i + 1) / total;
+          _statusMessage = 'جاري الحفظ في الهاتف: $successCount من أصل $total...';
+        });
+        await Future.delayed(const Duration(milliseconds: 5));
+      }
+    }
+
+    setState(() {
+      _isLoading = false;
+      _statusMessage = 'تمت المزامنة بنجاح! تم تحديث $successCount جهة اتصال في هاتفك.';
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('اكتملت المزامنة: تم تحديث $successCount اسماً بنجاح في تطبيق الهاتف.')),
+      );
+    }
   }
 
   @override
@@ -141,7 +219,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
               children: [
                 _buildStepHeader(0, '1. المعاينة', Icons.visibility),
                 _buildStepHeader(1, '2. المعالجة', Icons.tune),
-                _buildStepHeader(2, '3. النتائج والتطبيق', Icons.check_circle),
+                _buildStepHeader(2, '3. النتائج والمزامنة', Icons.check_circle),
               ],
             ),
           ),
@@ -171,7 +249,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
                   const Icon(Icons.warning_amber_rounded, color: Colors.orange),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('تم تخطي ${_errorLogs.length} استثناء بأمان لضمان سلامة بياناتك.',
+                    child: Text('تم رصد ${_errorLogs.length} ملاحظة تم تخطيها بأمان لضمان سلامة بياناتك.',
                         style: const TextStyle(fontSize: 12)),
                   ),
                 ],
@@ -268,21 +346,39 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
           child: Text(
-            'تم دمج المتطابقات! إجمالي الأسماء بعد الدمج: ${_processedContacts.length}',
+            'تم تجهيز القائمة بعد دمج المتطابقات: ${_processedContacts.length} اسم',
             style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal),
           ),
         ),
-        const SizedBox(height: 8),
-        ElevatedButton.icon(
-          onPressed: () async {
-            await ContactsService.exportToCsv(_processedContacts, '/sdcard/Download/app_smart_contacts.csv');
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم التصدير بنجاح إلى مجلد Download!')));
-          },
-          icon: const Icon(Icons.download),
-          label: const Text('تصدير CSV النظيف'),
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey, foregroundColor: Colors.white),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
+          child: Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _isLoading ? null : _syncChangesToDevice,
+                  icon: const Icon(Icons.sync),
+                  label: const Text('مزامنة مباشرة للهاتف'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal[700],
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await ContactsService.exportToCsv(_processedContacts, '/sdcard/Download/app_smart_contacts.csv');
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ نسخة احتياطية CSV في مجلد Download.')));
+                },
+                icon: const Icon(Icons.save_alt),
+                label: const Text('نسخة احتياطية'),
+              ),
+            ],
+          ),
         ),
         const Divider(),
         Expanded(
