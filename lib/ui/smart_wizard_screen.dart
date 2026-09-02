@@ -30,11 +30,11 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     _checkPermissionsAndFetch();
   }
 
-  // 1. جلب جهات الاتصال مع تفعيل withAccounts: true للسماح بالتعديل في أندرويد
+  // جلب جهات الاتصال مع كامل الشروط المطلوبة للتعديل في أندرويد
   Future<void> _checkPermissionsAndFetch() async {
     setState(() {
       _isLoading = true;
-      _statusMessage = 'جاري طلب الصلاحيات وربط الحسابات...';
+      _statusMessage = 'جاري التحقق من أذونات القراءة والكتابة...';
       _errorLogs.clear();
       _nativeContactsMap.clear();
     });
@@ -42,10 +42,11 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     try {
       bool granted = await FlutterContacts.requestPermission(readonly: false);
       if (granted) {
+        // تفعيل withPhoto: true و withAccounts: true للسماح بالتحديث في أندرويد
         List<Contact> deviceContacts = await FlutterContacts.getContacts(
           withProperties: true,
-          withAccounts: true, // ضروري جداً في أندرويد للسماح بالتحديث
-          withPhoto: false,
+          withAccounts: true,
+          withPhoto: true,
         );
 
         List<AppContact> loaded = [];
@@ -66,7 +67,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         setState(() {
           _rawContacts = loaded;
           _isLoading = false;
-          _statusMessage = 'تم جلب ${_rawContacts.length} جهة اتصال بنجاح مع ربط الحسابات.';
+          _statusMessage = 'تم جلب ${_rawContacts.length} جهة اتصال بنجاح وجاهزة للتعديل الكامل.';
         });
       } else {
         setState(() {
@@ -78,12 +79,12 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       setState(() {
         _isLoading = false;
         _statusMessage = 'خطأ أثناء القراءة: $e';
-        _errorLogs.add('Permission/Fetch Error: $e');
+        _errorLogs.add('Fetch Error: $e');
       });
     }
   }
 
-  // 2. خط أنابيب المعالجة والفرز
+  // مسار المعالجة والفرز
   Future<void> _runProcessingPipeline() async {
     setState(() {
       _isLoading = true;
@@ -111,7 +112,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       if (i % 25 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
-          _statusMessage = 'جاري الفرز: ${i + 1} من أصل $total...';
+          _statusMessage = 'جاري الفرز: تم فحص ${i + 1} من أصل $total...';
         });
         await Future.delayed(const Duration(milliseconds: 2));
       }
@@ -134,7 +135,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     });
   }
 
-  // 3. المزامنة المباشرة
+  // المزامنة الحقيقية في الهاتف
   Future<void> _syncChangesToDevice() async {
     bool? confirm = await showDialog<bool>(
       context: context,
@@ -159,7 +160,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     setState(() {
       _isLoading = true;
       _progressValue = 0.0;
-      _statusMessage = 'جاري تطبيق التعديلات على الهاتف...';
+      _statusMessage = 'جاري تطبيق التعديلات على ذاكرة الهاتف...';
       _errorLogs.clear();
     });
 
@@ -240,7 +241,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('تفاصيل الاستثناءات والأخطاء المسجلة:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text('تفاصيل الاستثناءات المسجلة:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             Expanded(
               child: ListView.builder(
@@ -266,56 +267,83 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         backgroundColor: Colors.blueGrey[900],
         foregroundColor: Colors.white,
       ),
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-            color: Colors.blueGrey[50],
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildStepHeader(0, '1. المعاينة', Icons.visibility),
-                _buildStepHeader(1, '2. المعالجة', Icons.tune),
-                _buildStepHeader(2, '3. النتائج والمزامنة', Icons.check_circle),
-              ],
+      body: SafeArea(
+        bottom: true, // حماية المساحة السفلية من التداخل مع شريط التنقل
+        child: Column(
+          children: [
+            // شريط المراحل
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              color: Colors.blueGrey[50],
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildStepHeader(0, '1. المعاينة', Icons.visibility),
+                  _buildStepHeader(1, '2. المعالجة', Icons.tune),
+                  _buildStepHeader(2, '3. النتائج والمزامنة', Icons.check_circle),
+                ],
+              ),
             ),
-          ),
-          if (_isLoading)
-            LinearProgressIndicator(value: _progressValue > 0 ? _progressValue : null, color: Colors.teal),
-          Padding(
-            padding: const EdgeInsets.all(10.0),
-            child: Text(
-              _statusMessage,
-              style: TextStyle(fontSize: 13, color: Colors.blueGrey[800], fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
+
+            if (_isLoading)
+              LinearProgressIndicator(value: _progressValue > 0 ? _progressValue : null, color: Colors.teal),
+
+            Padding(
+              padding: const EdgeInsets.all(10.0),
+              child: Text(
+                _statusMessage,
+                style: TextStyle(fontSize: 13, color: Colors.blueGrey[800], fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
             ),
-          ),
-          Expanded(
-            child: _currentStep == 0
-                ? _buildInitialAuditView()
-                : _currentStep == 1
-                    ? _buildProcessingProgressView()
-                    : _buildFinalReviewView(),
-          ),
-          if (_errorLogs.isNotEmpty)
-            InkWell(
-              onTap: _showErrorsModal,
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                color: Colors.amber[100],
-                child: Row(
-                  children: [
-                    const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text('تم تسجيل ${_errorLogs.length} استثناء (اضغط لمعاينة التفاصيل)',
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    ),
-                  ],
+
+            // المحتوى الرئيسي
+            Expanded(
+              child: _currentStep == 0
+                  ? _buildInitialAuditView()
+                  : _currentStep == 1
+                      ? _buildProcessingProgressView()
+                      : _buildFinalReviewView(),
+            ),
+
+            // شريط الأخطاء إن وجد
+            if (_errorLogs.isNotEmpty)
+              InkWell(
+                onTap: _showErrorsModal,
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  color: Colors.amber[100],
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text('تم تسجيل ${_errorLogs.length} استثناء (اضغط لمعاينة التفاصيل)',
+                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // شريط التوقيع في الأسفل بكامل الشاشة مع حماية البار السفلي
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              color: Colors.blueGrey[900],
+              child: const Text(
+                'تصميم وتطوير: عمرو عياش',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
                 ),
               ),
             ),
-        ],
+          ],
+        ),
       ),
     );
   }
