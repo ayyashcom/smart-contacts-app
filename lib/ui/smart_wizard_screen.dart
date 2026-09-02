@@ -25,9 +25,11 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   Map<String, int> _tagStats = {};
   int _totalDuplicatesFound = 0;
 
-  // الحسابات المكتشفة ديناميكياً
   Set<String> _detectedAccountLabels = {};
   String _selectedAccount = 'ALL';
+
+  // تفضيلات المستخدم الديناميكية
+  ProcessingOptions _userOptions = ProcessingOptions();
 
   @override
   void initState() {
@@ -109,7 +111,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       _detectedAccountLabels = accountsFound;
       _rawContacts = loaded;
       _isLoading = false;
-      _statusMessage = 'تم قراءة ${_rawContacts.length} جهة اتصال جاهزة للفرز والدمج.';
+      _statusMessage = 'تم قراءة ${_rawContacts.length} جهة اتصال بنجاح.';
     });
   }
 
@@ -130,9 +132,11 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     for (int i = 0; i < total; i++) {
       var item = _rawContacts[i];
       try {
-        AppContact clean = RulesEngine.processContact(item);
+        AppContact clean = RulesEngine.processContact(item, _userOptions);
         tempProcessed.add(clean);
-        tags[clean.entityTag] = (tags[clean.entityTag] ?? 0) + 1;
+        if (clean.entityTag.isNotEmpty) {
+          tags[clean.entityTag] = (tags[clean.entityTag] ?? 0) + 1;
+        }
       } catch (err) {
         _errorLogs.add('معالجة ${item.displayName}: $err');
       }
@@ -146,7 +150,9 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       }
     }
 
-    List<AppContact> merged = RulesEngine.deduplicateContacts(tempProcessed);
+    List<AppContact> merged = _userOptions.enableDeduplication
+        ? RulesEngine.deduplicateContacts(tempProcessed)
+        : tempProcessed;
 
     int duplicatesCount = 0;
     for (var c in merged) {
@@ -159,7 +165,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
       _totalDuplicatesFound = duplicatesCount;
       _isLoading = false;
       _currentStep = 2;
-      _statusMessage = 'اكتمل الفرز! تم تجهيز ${_processedContacts.length} جهة اتصال (المكررات المطلوب حذفها: $duplicatesCount).';
+      _statusMessage = 'اكتملت المعالجة! جاهز للمراجعة والتطبيق.';
     });
   }
 
@@ -187,7 +193,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     setState(() {
       _isLoading = true;
       _progressValue = 0.0;
-      _statusMessage = 'جاري تطبيق التعديلات ودمج السجلات...';
+      _statusMessage = 'جاري تطبيق التعديلات ودمج السجلات في هاتفك...';
       _errorLogs.clear();
     });
 
@@ -203,8 +209,12 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         try {
           String tagPrefix = item.entityTag.isNotEmpty ? '[${item.entityTag}] ' : '';
           native.name.first = '$tagPrefix${item.displayName}'.trim();
-          native.name.nickname = item.englishName;
-          native.phones = item.phones.map((p) => Phone(p)).toList();
+          if (_userOptions.enableTransliteration) {
+            native.name.nickname = item.englishName;
+          }
+          if (_userOptions.normalizePhones) {
+            native.phones = item.phones.map((p) => Phone(p)).toList();
+          }
 
           await native.update();
           updatedCount++;
@@ -213,14 +223,16 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         }
       }
 
-      for (var dupId in item.duplicateIdsToDelete) {
-        Contact? dupNative = _nativeContactsMap[dupId];
-        if (dupNative != null) {
-          try {
-            await dupNative.delete();
-            deletedCount++;
-          } catch (delErr) {
-            _errorLogs.add('فشل حذف مكرر ($dupId): $delErr');
+      if (_userOptions.enableDeduplication) {
+        for (var dupId in item.duplicateIdsToDelete) {
+          Contact? dupNative = _nativeContactsMap[dupId];
+          if (dupNative != null) {
+            try {
+              await dupNative.delete();
+              deletedCount++;
+            } catch (delErr) {
+              _errorLogs.add('فشل حذف مكرر ($dupId): $delErr');
+            }
           }
         }
       }
@@ -257,6 +269,100 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
     }
   }
 
+  // نافذة تخصيص القواعد للمستخدم البسيط
+  void _openPreferencesSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setSheetState) => Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('خيارات معالجة جهات الاتصال', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                ],
+              ),
+              const Divider(),
+              SwitchListTile(
+                title: const Text('دمج الأسماء والأرقام المكررة'),
+                subtitle: const Text('دمج السجلات المتشابهة وحذف النسخ الزائدة بأمان'),
+                value: _userOptions.enableDeduplication,
+                onChanged: (val) {
+                  setSheetState(() => _userOptions.enableDeduplication = val);
+                  setState(() {});
+                },
+              ),
+              SwitchListTile(
+                title: const Text('تصنيف جهات الاتصال بالتاجات'),
+                subtitle: const Text('إضافة تصنيف تلقائي (أطباء، صيانة، أعمال...)'),
+                value: _userOptions.enableTagging,
+                onChanged: (val) {
+                  setSheetState(() => _userOptions.enableTagging = val);
+                  setState(() {});
+                },
+              ),
+              if (_userOptions.enableTagging)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('لغة التاجات:'),
+                      SegmentedButton<bool>(
+                        segments: const [
+                          ButtonSegment(value: true, label: Text('عربي [طبيب]')),
+                          ButtonSegment(value: false, label: Text('إنجليزي [MED]')),
+                        ],
+                        selected: {_userOptions.useArabicTags},
+                        onSelectionChanged: (setVal) {
+                          setSheetState(() => _userOptions.useArabicTags = setVal.first);
+                          setState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              SwitchListTile(
+                title: const Text('توليد الاسم اللاتيني الصوتي'),
+                subtitle: const Text('تسهيل البحث في شاشات السيارات والساعات الذكية'),
+                value: _userOptions.enableTransliteration,
+                onChanged: (val) {
+                  setSheetState(() => _userOptions.enableTransliteration = val);
+                  setState(() {});
+                },
+              ),
+              SwitchListTile(
+                title: const Text('توحيد وتنسيق أرقام الهواتف'),
+                subtitle: const Text('إزالة المسافات والرموز الزائدة لسهولة الاتصال'),
+                value: _userOptions.normalizePhones,
+                onChanged: (val) {
+                  setSheetState(() => _userOptions.normalizePhones = val);
+                  setState(() {});
+                },
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                  child: const Text('اعتماد الخيارات'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showErrorsModal() {
     showModalBottomSheet(
       context: context,
@@ -290,6 +396,13 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         centerTitle: true,
         backgroundColor: Colors.blueGrey[900],
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: 'تخصيص الخيارات والترميز',
+            onPressed: _openPreferencesSheet,
+          )
+        ],
       ),
       body: SafeArea(
         bottom: true,
@@ -408,26 +521,39 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
           ),
         Card(
           margin: const EdgeInsets.all(12),
+          elevation: 2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           child: Padding(
             padding: const EdgeInsets.all(12.0),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('العدد: ${_rawContacts.length}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                if (_rawContacts.isEmpty)
-                  ElevatedButton.icon(
-                    onPressed: _checkPermissionsAndFetch,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('تحديث'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange[800], foregroundColor: Colors.white),
-                  )
-                else
-                  ElevatedButton.icon(
-                    onPressed: _isLoading ? null : _runProcessingPipeline,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('بدء التنظيف والدمج'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                  ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('العدد: ${_rawContacts.length}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(
+                      'الدمج: ${_userOptions.enableDeduplication ? "مفعل" : "معطل"} | التاجات: ${_userOptions.enableTagging ? (_userOptions.useArabicTags ? "عربي" : "إنجليزي") : "معطل"}',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    IconButton.filledTonal(
+                      onPressed: _openPreferencesSheet,
+                      icon: const Icon(Icons.tune),
+                      tooltip: 'تعديل الخيارات',
+                    ),
+                    const SizedBox(width: 6),
+                    ElevatedButton.icon(
+                      onPressed: _isLoading || _rawContacts.isEmpty ? null : _runProcessingPipeline,
+                      icon: const Icon(Icons.play_arrow),
+                      label: const Text('بدء المعالجة'),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -470,13 +596,14 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
   Widget _buildFinalReviewView() {
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Wrap(
-            spacing: 8,
-            children: _tagStats.entries.map((e) => Chip(label: Text('${e.key}: ${e.value}'))).toList(),
+        if (_tagStats.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Wrap(
+              spacing: 8,
+              children: _tagStats.entries.map((e) => Chip(label: Text('${e.key}: ${e.value}'))).toList(),
+            ),
           ),
-        ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
           child: Text(
@@ -519,9 +646,9 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
             itemBuilder: (context, index) {
               var c = _processedContacts[index];
               return ListTile(
-                leading: Chip(label: Text(c.entityTag)),
+                leading: c.entityTag.isNotEmpty ? Chip(label: Text(c.entityTag)) : const Icon(Icons.person),
                 title: Text(c.displayName),
-                subtitle: Text('EN: ${c.englishName}\nأرقام (${c.phones.length})${c.duplicateIdsToDelete.isNotEmpty ? " • مدمج (${c.duplicateIdsToDelete.length})" : ""}: ${c.phones.join(", ")}'),
+                subtitle: Text('${c.englishName.isNotEmpty ? "EN: ${c.englishName}\n" : ""}أرقام (${c.phones.length})${c.duplicateIdsToDelete.isNotEmpty ? " • مدمج (${c.duplicateIdsToDelete.length})" : ""}: ${c.phones.join(", ")}'),
               );
             },
           ),
