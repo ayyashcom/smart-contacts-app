@@ -1,3 +1,10 @@
+enum ContactStatus {
+  active,          // نشط مؤخراً
+  temporary,       // مؤقت
+  candidateDelete, // مرشح للحذف
+  vip              // رقم مهم
+}
+
 class AppContact {
   String id;
   String displayName;
@@ -5,7 +12,8 @@ class AppContact {
   String entityTag;
   List<String> phones;
   String lastContactDate;
-  List<String> duplicateIdsToDelete; // المعرفات التابعة التي تم دمجها لحذفها لاحقاً
+  ContactStatus status;
+  List<String> duplicateIdsToDelete;
 
   AppContact({
     required this.id,
@@ -14,8 +22,27 @@ class AppContact {
     this.entityTag = 'GEN',
     required this.phones,
     this.lastContactDate = '',
+    this.status = ContactStatus.temporary,
     List<String>? duplicateIdsToDelete,
   }) : duplicateIdsToDelete = duplicateIdsToDelete ?? [];
+
+  String get statusLabel {
+    switch (status) {
+      case ContactStatus.active: return 'نشط';
+      case ContactStatus.temporary: return 'مؤقت';
+      case ContactStatus.candidateDelete: return 'مرشح للحذف';
+      case ContactStatus.vip: return 'رقم مهم';
+    }
+  }
+
+  String get statusVcfTag {
+    switch (status) {
+      case ContactStatus.active: return 'STATUS_ACTIVE';
+      case ContactStatus.temporary: return 'STATUS_TEMP';
+      case ContactStatus.candidateDelete: return 'STATUS_CANDIDATE_DELETE';
+      case ContactStatus.vip: return 'STATUS_VIP';
+    }
+  }
 
   Map<String, dynamic> toMap() {
     return {
@@ -25,6 +52,8 @@ class AppContact {
       'entityTag': entityTag,
       'phones': phones.join(';'),
       'lastContactDate': lastContactDate,
+      'status': status.name,
+      'mergedDuplicatesCount': duplicateIdsToDelete.length,
     };
   }
 }

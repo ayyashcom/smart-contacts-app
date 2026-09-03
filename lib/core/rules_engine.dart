@@ -3,8 +3,8 @@ import 'contact_model.dart';
 class ProcessingOptions {
   bool enableDeduplication;
   bool enableTagging;
-  bool useArabicTags; // عربي أو إنجليزي
-  bool enableTransliteration; // توليد الاسم الصوتي
+  bool useArabicTags;
+  bool enableTransliteration;
   bool normalizePhones;
 
   ProcessingOptions({
@@ -31,7 +31,7 @@ class RulesEngine {
 
   static String normalizePhoneNumber(String phone) {
     String digits = phone.replaceAll(RegExp(r'[^\d]'), '');
-    if (digits.length > 9) {
+    if (digits.length >= 9) {
       return digits.substring(digits.length - 9);
     }
     return digits;
@@ -43,28 +43,6 @@ class RulesEngine {
     clean = clean.replaceAll(RegExp(r'[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]', unicode: true), '');
     clean = clean.replaceAll(RegExp(r'[\*#_\-=+~|/\\:;!؟?]'), ' ');
     return clean.replaceAll(RegExp(r'\s+'), ' ').trim();
-  }
-
-  static String normalizeForMatching(String text) {
-    String clean = cleanDisplayName(text);
-    if (clean.isEmpty) return '';
-
-    clean = clean
-        .replaceAll(RegExp(r'[أإآ]'), 'ا')
-        .replaceAll('ة', 'ه')
-        .replaceAll('ى', 'ي');
-
-    List<String> words = clean.split(RegExp(r'\s+'));
-    List<String> strippedWords = [];
-
-    for (var w in words) {
-      if (w.startsWith('ال') && w.length > 3) {
-        strippedWords.add(w.substring(2));
-      } else {
-        strippedWords.add(w);
-      }
-    }
-    return strippedWords.join(' ').toLowerCase().trim();
   }
 
   static String transliterate(String text) {
@@ -96,7 +74,7 @@ class RulesEngine {
     return useArabic ? 'عام' : 'GEN';
   }
 
-  static AppContact processContact(AppContact contact, ProcessingOptions opts, {String organization = ''}) {
+  static AppContact processContact(AppContact contact, ProcessingOptions opts, {String organization = '', Set<String>? activePhones, Set<String>? vipPhones}) {
     contact.displayName = cleanDisplayName(contact.displayName);
 
     if (opts.enableTagging) {
@@ -122,12 +100,29 @@ class RulesEngine {
       contact.phones = normalizedPhones;
     }
 
+    // تحديد الحالة بدقة متناهية
+    bool isVip = false;
+    bool isActive = false;
+
+    if (vipPhones != null) {
+      isVip = contact.phones.any((p) => vipPhones.contains(normalizePhoneNumber(p)));
+    }
+    if (activePhones != null) {
+      isActive = contact.phones.any((p) => activePhones.contains(normalizePhoneNumber(p)));
+    }
+
+    if (isVip) {
+      contact.status = ContactStatus.vip;
+    } else if (isActive) {
+      contact.status = ContactStatus.active;
+    }
+
     return contact;
   }
 
-  static List<AppContact> deduplicateContacts(List<AppContact> contacts) {
+  // دمج آمن: حصراً برقم الهاتف (Phone-Only Deduplication) لحماية تشابه الأسماء
+  static List<AppContact> deduplicateContactsSafe(List<AppContact> contacts) {
     Map<String, AppContact> phoneRegistry = {};
-    Map<String, AppContact> nameRegistry = {};
     List<AppContact> mergedList = [];
 
     for (var contact in contacts) {
@@ -135,32 +130,37 @@ class RulesEngine {
 
       for (var p in contact.phones) {
         String pKey = normalizePhoneNumber(p);
-        if (pKey.isNotEmpty && phoneRegistry.containsKey(pKey)) {
+        if (pKey.length >= 7 && phoneRegistry.containsKey(pKey)) {
           matchedContact = phoneRegistry[pKey];
           break;
         }
       }
 
-      if (matchedContact == null) {
-        String nKey = normalizeForMatching(contact.displayName);
-        if (nKey.isNotEmpty && nameRegistry.containsKey(nKey)) {
-          matchedContact = nameRegistry[nKey];
-        }
-      }
-
       if (matchedContact != null) {
+        // دمج كامل الأرقام في السجل الأصلي
         for (var p in contact.phones) {
           if (!matchedContact.phones.contains(p)) {
             matchedContact.phones.add(p);
           }
           String pKey = normalizePhoneNumber(p);
-          if (pKey.isNotEmpty) phoneRegistry[pKey] = matchedContact;
+          if (pKey.length >= 7) phoneRegistry[pKey] = matchedContact;
         }
 
+        // إضافة المعرف للحذف الآمن فقط إذا لم تكن جهة الاتصال VIP
         if (contact.id != matchedContact.id && !matchedContact.duplicateIdsToDelete.contains(contact.id)) {
-          matchedContact.duplicateIdsToDelete.add(contact.id);
+          if (contact.status != ContactStatus.vip) {
+            matchedContact.duplicateIdsToDelete.add(contact.id);
+          }
         }
 
+        // إذا كان أحدهما نشط أو VIP يرث السجل الأصلي الحالة الأقوى
+        if (contact.status == ContactStatus.vip || matchedContact.status == ContactStatus.vip) {
+          matchedContact.status = ContactStatus.vip;
+        } else if (contact.status == ContactStatus.active || matchedContact.status == ContactStatus.active) {
+          matchedContact.status = ContactStatus.active;
+        }
+
+        // تفضيل الاسم العربي الأطول والأوضح
         if (contact.displayName.length > matchedContact.displayName.length) {
           matchedContact.displayName = contact.displayName;
           matchedContact.englishName = contact.englishName;
@@ -169,10 +169,8 @@ class RulesEngine {
       } else {
         for (var p in contact.phones) {
           String pKey = normalizePhoneNumber(p);
-          if (pKey.isNotEmpty) phoneRegistry[pKey] = contact;
+          if (pKey.length >= 7) phoneRegistry[pKey] = contact;
         }
-        String nKey = normalizeForMatching(contact.displayName);
-        if (nKey.isNotEmpty) nameRegistry[nKey] = contact;
         mergedList.add(contact);
       }
     }

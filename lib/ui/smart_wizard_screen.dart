@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import '../core/contact_model.dart';
@@ -12,194 +13,201 @@ class SmartWizardScreen extends StatefulWidget {
 }
 
 class _SmartWizardScreenState extends State<SmartWizardScreen> {
-  int _currentStep = 0;
   bool _isLoading = false;
-  String _statusMessage = 'جاهز للبدء';
+  bool _isProcessing = false;
+  bool _previewReady = false;
   double _progressValue = 0.0;
+  String _statusMessage = 'جاهز لبدء المعاينة المرحلية الآمنة';
 
+  List<Contact> _rawNativeContacts = [];
   Map<String, Contact> _nativeContactsMap = {};
-  List<Contact> _allDeviceContacts = [];
-  List<AppContact> _rawContacts = [];
+  List<AppContact> _originalContacts = [];
   List<AppContact> _processedContacts = [];
-  List<String> _errorLogs = [];
-  Map<String, int> _tagStats = {};
-  int _totalDuplicatesFound = 0;
+  final List<String> _errorLogs = [];
 
-  Set<String> _detectedAccountLabels = {};
-  String _selectedAccount = 'ALL';
+  final ProcessingOptions _userOptions = ProcessingOptions();
 
-  // تفضيلات المستخدم الديناميكية
-  ProcessingOptions _userOptions = ProcessingOptions();
+  // إحصائيات المعاينة المرحلية
+  int _activeCount = 0;
+  int _vipCount = 0;
+  int _tempCount = 0;
+  int _candidateCount = 0;
+  int _mergedDuplicatesCount = 0;
 
   @override
   void initState() {
     super.initState();
-    _checkPermissionsAndFetch();
+    _loadContacts();
   }
 
-  Future<void> _checkPermissionsAndFetch() async {
+  Future<void> _loadContacts() async {
     setState(() {
       _isLoading = true;
-      _statusMessage = 'جاري طلب الصلاحيات وفحص جهات الاتصال...';
-      _errorLogs.clear();
-      _nativeContactsMap.clear();
+      _statusMessage = 'جاري قراءة جهات الاتصال من الجهاز...';
     });
 
     try {
-      bool granted = await FlutterContacts.requestPermission(readonly: false);
-      if (granted) {
-        List<Contact> deviceContacts = await FlutterContacts.getContacts(
+      if (await FlutterContacts.requestPermission()) {
+        final contacts = await FlutterContacts.getContacts(
           withProperties: true,
           withAccounts: true,
-          withPhoto: true,
         );
 
-        _allDeviceContacts = deviceContacts;
-        Set<String> accountsFound = {};
+        _rawNativeContacts = contacts;
+        _nativeContactsMap = {for (var c in contacts) c.id: c};
 
-        for (var c in deviceContacts) {
-          for (var a in c.accounts) {
-            String label = '${a.name} (${a.type})'.trim();
-            if (label.isNotEmpty && label != ' ()') {
-              accountsFound.add(label);
-            }
-          }
-        }
+        _originalContacts = contacts.map((c) {
+          return AppContact(
+            id: c.id,
+            displayName: c.displayName,
+            phones: c.phones.map((p) => p.number).toList(),
+          );
+        }).toList();
 
-        _filterAndPopulateRawContacts(accountsFound);
+        setState(() {
+          _statusMessage = 'تم تحميل ${_originalContacts.length} جهة اتصال بنجاح.';
+        });
       } else {
         setState(() {
-          _isLoading = false;
-          _statusMessage = 'تم رفض إذن الكتابة. يرجى تفعيل الصلاحية من إعدادات الهاتف.';
+          _statusMessage = 'تم رفض إذن الوصول لجهات الاتصال.';
         });
       }
     } catch (e) {
       setState(() {
+        _statusMessage = 'خطأ أثناء تحميل جهات الاتصال: $e';
+      });
+    } finally {
+      setState(() {
         _isLoading = false;
-        _statusMessage = 'خطأ أثناء القراءة: $e';
-        _errorLogs.add('Fetch Error: $e');
       });
     }
   }
 
-  void _filterAndPopulateRawContacts(Set<String> accountsFound) {
-    List<Contact> filtered = _allDeviceContacts;
-    if (_selectedAccount != 'ALL') {
-      filtered = _allDeviceContacts.where((c) =>
-        c.accounts.any((a) => '${a.name} (${a.type})'.trim() == _selectedAccount)
-      ).toList();
-    }
-
-    _nativeContactsMap.clear();
-    List<AppContact> loaded = [];
-
-    for (var dc in filtered) {
-      _nativeContactsMap[dc.id] = dc;
-      List<String> phones = dc.phones
-          .map((p) => p.number.trim())
-          .where((p) => p.isNotEmpty)
-          .toList();
-
-      loaded.add(AppContact(
-        id: dc.id,
-        displayName: dc.displayName.isEmpty ? 'جهة اتصال بدون اسم' : dc.displayName,
-        phones: phones,
-      ));
-    }
-
+  // 1. المعاينة المرحلية والتصدير للداونلود (بدون أي تعديل على الهاتف)
+  Future<void> _runStagingPreview() async {
     setState(() {
-      _detectedAccountLabels = accountsFound;
-      _rawContacts = loaded;
-      _isLoading = false;
-      _statusMessage = 'تم قراءة ${_rawContacts.length} جهة اتصال بنجاح.';
-    });
-  }
-
-  Future<void> _runProcessingPipeline() async {
-    setState(() {
-      _isLoading = true;
-      _currentStep = 1;
-      _progressValue = 0.0;
-      _processedContacts.clear();
-      _tagStats.clear();
-      _errorLogs.clear();
+      _isProcessing = true;
+      _previewReady = false;
+      _progressValue = 0.1;
+      _statusMessage = 'جاري المعالجة والفرز الآمن في الذاكرة...';
     });
 
-    int total = _rawContacts.length;
-    List<AppContact> tempProcessed = [];
-    Map<String, int> tags = {};
+    try {
+      List<AppContact> staged = [];
+      for (var c in _originalContacts) {
+        var copy = AppContact(
+          id: c.id,
+          displayName: c.displayName,
+          phones: List.from(c.phones),
+        );
+        staged.add(RulesEngine.processContact(copy, _userOptions));
+      }
 
-    for (int i = 0; i < total; i++) {
-      var item = _rawContacts[i];
-      try {
-        AppContact clean = RulesEngine.processContact(item, _userOptions);
-        tempProcessed.add(clean);
-        if (clean.entityTag.isNotEmpty) {
-          tags[clean.entityTag] = (tags[clean.entityTag] ?? 0) + 1;
+      _progressValue = 0.4;
+      setState(() => _statusMessage = 'جاري دمج الأرقام المكررة استناداً للأرقام فقط...');
+
+      if (_userOptions.enableDeduplication) {
+        staged = RulesEngine.deduplicateContactsSafe(staged);
+      }
+
+      _progressValue = 0.7;
+      setState(() => _statusMessage = 'توليد ملفات المعاينة والتقارير في Downloads...');
+
+      // حساب الإحصائيات
+      _activeCount = 0;
+      _vipCount = 0;
+      _tempCount = 0;
+      _candidateCount = 0;
+      _mergedDuplicatesCount = 0;
+
+      for (var c in staged) {
+        _mergedDuplicatesCount += c.duplicateIdsToDelete.length;
+        switch (c.status) {
+          case ContactStatus.active: _activeCount++; break;
+          case ContactStatus.vip: _vipCount++; break;
+          case ContactStatus.temporary: _tempCount++; break;
+          case ContactStatus.candidateDelete: _candidateCount++; break;
         }
-      } catch (err) {
-        _errorLogs.add('معالجة ${item.displayName}: $err');
       }
 
-      if (i % 25 == 0 || i == total - 1) {
-        setState(() {
-          _progressValue = (i + 1) / total;
-          _statusMessage = 'جاري الفحص المتقدم: تم تحليل ${i + 1} من أصل $total...';
-        });
-        await Future.delayed(const Duration(milliseconds: 2));
-      }
+      _processedContacts = staged;
+
+      // تصدير ملفات العزل المرحلي
+      const downloadPath = '/sdcard/Download';
+      await ContactsService.exportToVcf(staged, '$downloadPath/CONTACTS_PREVIEW_CHANGES.vcf');
+      await ContactsService.generateSummaryReport(
+        originalContacts: _originalContacts,
+        processedContacts: staged,
+        reportPath: '$downloadPath/CHANGES_SUMMARY.txt',
+      );
+
+      _progressValue = 1.0;
+      _previewReady = true;
+      _statusMessage = 'اكتملت المعاينة المرحلية بنجاح! تم حفظ التقارير في مجلد Downloads.';
+    } catch (e) {
+      _statusMessage = 'حدث خطأ أثناء المعاينة المرحلية: $e';
+    } finally {
+      setState(() {
+        _isProcessing = false;
+      });
     }
-
-    List<AppContact> merged = _userOptions.enableDeduplication
-        ? RulesEngine.deduplicateContacts(tempProcessed)
-        : tempProcessed;
-
-    int duplicatesCount = 0;
-    for (var c in merged) {
-      duplicatesCount += c.duplicateIdsToDelete.length;
-    }
-
-    setState(() {
-      _processedContacts = merged;
-      _tagStats = tags;
-      _totalDuplicatesFound = duplicatesCount;
-      _isLoading = false;
-      _currentStep = 2;
-      _statusMessage = 'اكتملت المعالجة! جاهز للمراجعة والتطبيق.';
-    });
   }
 
-  Future<void> _syncChangesToDevice() async {
-    bool? confirm = await showDialog<bool>(
+  // 2. بوابة التأكيد الصريح والمزامنة الحقيقية على الجهاز
+  Future<void> _showApprovalDialog() async {
+    showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        title: const Text('تأكيد المزامنة المباشرة'),
-        content: Text(
-          'سيتم تحديث ${_processedContacts.length} جهة اتصال وحذف $_totalDuplicatesFound جهة مكررة نهائياً من هاتفك بعد دمج أرقامها.\n\nهل تريد البدء؟',
+        title: const Text('تأكيد المزامنة والتطبيق النهائي', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('هل أنت متأكد من تطبيق التغييرات على دفتر عناوين الهاتف؟'),
+              const SizedBox(height: 12),
+              Text('• جهات اتصال سيتم تحديثها: ${_processedContacts.length}'),
+              Text('• تكرارات سيتم حذفها بعد الدمج الكامل: $_mergedDuplicatesCount'),
+              Text('• جهات اتصال نشطة: $_activeCount'),
+              Text('• جهات اتصال VIP محمية: $_vipCount'),
+              const SizedBox(height: 12),
+              const Text('تنبيه: يمكنك فحص الملف CONTACTS_PREVIEW_CHANGES.vcf في مجلد Downloads أولاً.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
+          ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('إلغاء المراجعة'),
+          ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-            child: const Text('تأكيد وتطبيق'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _commitSyncToDevice();
+            },
+            child: const Text('موافق، ابدأ المزامنة'),
           ),
         ],
       ),
     );
+  }
 
-    if (confirm != true) return;
-
+  // تنفيذ التعديل على الهاتف بحذر متناهٍ
+  Future<void> _commitSyncToDevice() async {
     setState(() {
-      _isLoading = true;
+      _isProcessing = true;
       _progressValue = 0.0;
-      _statusMessage = 'جاري تطبيق التعديلات ودمج السجلات في هاتفك...';
+      _statusMessage = 'جاري المزامنة الفعلية على الجهاز...';
       _errorLogs.clear();
     });
 
-    int total = _processedContacts.length;
     int updatedCount = 0;
     int deletedCount = 0;
+    int total = _processedContacts.length;
 
     for (int i = 0; i < total; i++) {
       var item = _processedContacts[i];
@@ -209,12 +217,15 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         try {
           String tagPrefix = item.entityTag.isNotEmpty ? '[${item.entityTag}] ' : '';
           native.name.first = '$tagPrefix${item.displayName}'.trim();
-          if (_userOptions.enableTransliteration) {
+          if (_userOptions.enableTransliteration && item.englishName.isNotEmpty) {
             native.name.nickname = item.englishName;
           }
           if (_userOptions.normalizePhones) {
             native.phones = item.phones.map((p) => Phone(p)).toList();
           }
+
+          // إضافة وسام الحالة في الملاحظات
+          native.notes = [Note(item.statusVcfTag)];
 
           await native.update();
           updatedCount++;
@@ -223,6 +234,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         }
       }
 
+      // حذف التكرارات المدمجة فقط
       if (_userOptions.enableDeduplication) {
         for (var dupId in item.duplicateIdsToDelete) {
           Contact? dupNative = _nativeContactsMap[dupId];
@@ -230,6 +242,7 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
             try {
               await dupNative.delete();
               deletedCount++;
+              _nativeContactsMap.remove(dupId);
             } catch (delErr) {
               _errorLogs.add('فشل حذف مكرر ($dupId): $delErr');
             }
@@ -237,423 +250,138 @@ class _SmartWizardScreenState extends State<SmartWizardScreen> {
         }
       }
 
-      if (i % 20 == 0 || i == total - 1) {
+      if (i % 15 == 0 || i == total - 1) {
         setState(() {
           _progressValue = (i + 1) / total;
-          _statusMessage = 'جاري التنفيذ: $updatedCount تم تحديثه | $deletedCount تم حذفه...';
+          _statusMessage = 'جاري المزامنة: $updatedCount تم تحديثه | $deletedCount تم حذفه...';
         });
-        await Future.delayed(const Duration(milliseconds: 2));
+        await Future.delayed(const Duration(milliseconds: 5));
       }
     }
 
     setState(() {
-      _isLoading = false;
-      _statusMessage = 'اكتملت العملية: نجح تعديل $updatedCount وحذف $deletedCount نسخة مكررة.';
+      _isProcessing = false;
+      _statusMessage = 'تمت المزامنة بنجاح! تم تحديث $updatedCount جهة اتصال وحذف $deletedCount مكرر مدمج.';
     });
-
-    if (mounted) {
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('تقرير المزامنة الفعلي'),
-          content: Text(
-            '✔ تم التحديث بنجاح: $updatedCount\n'
-            '✔ تم حذف ودمج المكررات: $deletedCount\n'
-            '✖ الأخطاء: ${_errorLogs.length}',
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إغلاق')),
-          ],
-        ),
-      );
-    }
-  }
-
-  // نافذة تخصيص القواعد للمستخدم البسيط
-  void _openPreferencesSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setSheetState) => Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('خيارات معالجة جهات الاتصال', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
-                ],
-              ),
-              const Divider(),
-              SwitchListTile(
-                title: const Text('دمج الأسماء والأرقام المكررة'),
-                subtitle: const Text('دمج السجلات المتشابهة وحذف النسخ الزائدة بأمان'),
-                value: _userOptions.enableDeduplication,
-                onChanged: (val) {
-                  setSheetState(() => _userOptions.enableDeduplication = val);
-                  setState(() {});
-                },
-              ),
-              SwitchListTile(
-                title: const Text('تصنيف جهات الاتصال بالتاجات'),
-                subtitle: const Text('إضافة تصنيف تلقائي (أطباء، صيانة، أعمال...)'),
-                value: _userOptions.enableTagging,
-                onChanged: (val) {
-                  setSheetState(() => _userOptions.enableTagging = val);
-                  setState(() {});
-                },
-              ),
-              if (_userOptions.enableTagging)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('لغة التاجات:'),
-                      SegmentedButton<bool>(
-                        segments: const [
-                          ButtonSegment(value: true, label: Text('عربي [طبيب]')),
-                          ButtonSegment(value: false, label: Text('إنجليزي [MED]')),
-                        ],
-                        selected: {_userOptions.useArabicTags},
-                        onSelectionChanged: (setVal) {
-                          setSheetState(() => _userOptions.useArabicTags = setVal.first);
-                          setState(() {});
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              SwitchListTile(
-                title: const Text('توليد الاسم اللاتيني الصوتي'),
-                subtitle: const Text('تسهيل البحث في شاشات السيارات والساعات الذكية'),
-                value: _userOptions.enableTransliteration,
-                onChanged: (val) {
-                  setSheetState(() => _userOptions.enableTransliteration = val);
-                  setState(() {});
-                },
-              ),
-              SwitchListTile(
-                title: const Text('توحيد وتنسيق أرقام الهواتف'),
-                subtitle: const Text('إزالة المسافات والرموز الزائدة لسهولة الاتصال'),
-                value: _userOptions.normalizePhones,
-                onChanged: (val) {
-                  setSheetState(() => _userOptions.normalizePhones = val);
-                  setState(() {});
-                },
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                  child: const Text('اعتماد الخيارات'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showErrorsModal() {
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('تفاصيل الاستثناءات المسجلة:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 8),
-            Expanded(
-              child: ListView.builder(
-                itemCount: _errorLogs.length,
-                itemBuilder: (c, idx) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Text('${idx + 1}. ${_errorLogs[idx]}', style: const TextStyle(fontSize: 12, color: Colors.redAccent)),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('المساعد الذكي لجهات الاتصال'),
-        centerTitle: true,
-        backgroundColor: Colors.blueGrey[900],
-        foregroundColor: Colors.white,
+        title: const Text('المعالج الذكي - بيئة الفرز الآمنة'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.tune),
-            tooltip: 'تخصيص الخيارات والترميز',
-            onPressed: _openPreferencesSheet,
+            icon: const Icon(Icons.refresh),
+            onPressed: _isLoading || _isProcessing ? null : _loadContacts,
           )
         ],
       ),
-      body: SafeArea(
-        bottom: true,
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-              color: Colors.blueGrey[50],
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildStepHeader(0, '1. المعاينة والمصدر', Icons.visibility),
-                  _buildStepHeader(1, '2. المعالجة', Icons.tune),
-                  _buildStepHeader(2, '3. النتائج والمزامنة', Icons.check_circle),
+                  Card(
+                    elevation: 2,
+                    child: Padding(
+                      padding: const EdgeInsets.all(14.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('الحالة: $_statusMessage', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 8),
+                          LinearProgressIndicator(value: _isProcessing ? _progressValue : 0.0),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_previewReady) ...[
+                    Row(
+                      children: [
+                        _buildStatBadge('نشط', _activeCount, Colors.green),
+                        _buildStatBadge('VIP', _vipCount, Colors.amber.shade800),
+                        _buildStatBadge('مؤقت', _tempCount, Colors.blue),
+                        _buildStatBadge('مرشح حذف', _candidateCount, Colors.red),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text('✔ تم دمج $_mergedDuplicatesCount رقم مكرر في أصحابها دون أي فقدان.',
+                        style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+                    const Divider(),
+                  ],
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: _previewReady ? _processedContacts.length : _originalContacts.length,
+                      itemBuilder: (context, index) {
+                        final c = _previewReady ? _processedContacts[index] : _originalContacts[index];
+                        return ListTile(
+                          dense: true,
+                          leading: CircleAvatar(
+                            backgroundColor: _getStatusColor(c.status),
+                            child: Text(c.statusLabel.substring(0, 1), style: const TextStyle(color: Colors.white)),
+                          ),
+                          title: Text(c.displayName),
+                          subtitle: Text('أرقام: ${c.phones.join(", ")}' +
+                              (c.duplicateIdsToDelete.isNotEmpty ? ' • مدمج (${c.duplicateIdsToDelete.length})' : '')),
+                          trailing: Text(c.statusLabel, style: TextStyle(color: _getStatusColor(c.status), fontWeight: FontWeight.bold)),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          icon: const Icon(Icons.remove_red_eye),
+                          label: const Text('1. معاينة مرحلية وتوليد VCF'),
+                          onPressed: _isProcessing ? null : _runStagingPreview,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(backgroundColor: _previewReady ? Colors.green : Colors.grey),
+                          icon: const Icon(Icons.sync),
+                          label: const Text('2. اعتماد ومزامنة بالهاتف'),
+                          onPressed: (_isProcessing || !_previewReady) ? null : _showApprovalDialog,
+                        ),
+                      ),
+                    ],
+                  )
                 ],
               ),
             ),
-            if (_isLoading)
-              LinearProgressIndicator(value: _progressValue > 0 ? _progressValue : null, color: Colors.teal),
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Text(
-                _statusMessage,
-                style: TextStyle(fontSize: 13, color: Colors.blueGrey[800], fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
-              ),
-            ),
-            Expanded(
-              child: _currentStep == 0
-                  ? _buildInitialAuditView()
-                  : _currentStep == 1
-                      ? _buildProcessingProgressView()
-                      : _buildFinalReviewView(),
-            ),
-            if (_errorLogs.isNotEmpty)
-              InkWell(
-                onTap: _showErrorsModal,
-                child: Container(
-                  padding: const EdgeInsets.all(10),
-                  color: Colors.amber[100],
-                  child: Row(
-                    children: [
-                      const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text('تم تسجيل ${_errorLogs.length} ملاحظة (اضغط للمعاينة)',
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              color: Colors.blueGrey[900],
-              child: const Text(
-                'تصميم وتطوير: عمرو عياش',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
-  Widget _buildStepHeader(int step, String title, IconData icon) {
-    bool isActive = _currentStep == step;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: isActive ? Colors.teal[800] : Colors.grey),
-        const SizedBox(width: 4),
-        Text(title, style: TextStyle(fontWeight: isActive ? FontWeight.bold : FontWeight.normal, color: isActive ? Colors.teal[800] : Colors.grey)),
-      ],
-    );
-  }
-
-  Widget _buildInitialAuditView() {
-    return Column(
-      children: [
-        if (_detectedAccountLabels.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 4.0),
-            child: Row(
-              children: [
-                const Icon(Icons.account_circle_outlined, size: 20, color: Colors.blueGrey),
-                const SizedBox(width: 8),
-                const Text('المصدر: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                Expanded(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: _selectedAccount,
-                    items: [
-                      const DropdownMenuItem(value: 'ALL', child: Text('جميع الحسابات')),
-                      ..._detectedAccountLabels.map((acc) => DropdownMenuItem(
-                            value: acc,
-                            child: Text(acc, overflow: TextOverflow.ellipsis),
-                          )),
-                    ],
-                    onChanged: (val) {
-                      if (val != null) {
-                        setState(() => _selectedAccount = val);
-                        _filterAndPopulateRawContacts(_detectedAccountLabels);
-                      }
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        Card(
-          margin: const EdgeInsets.all(12),
-          elevation: 2,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('العدد: ${_rawContacts.length}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    Text(
-                      'الدمج: ${_userOptions.enableDeduplication ? "مفعل" : "معطل"} | التاجات: ${_userOptions.enableTagging ? (_userOptions.useArabicTags ? "عربي" : "إنجليزي") : "معطل"}',
-                      style: const TextStyle(fontSize: 11, color: Colors.grey),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    IconButton.filledTonal(
-                      onPressed: _openPreferencesSheet,
-                      icon: const Icon(Icons.tune),
-                      tooltip: 'تعديل الخيارات',
-                    ),
-                    const SizedBox(width: 6),
-                    ElevatedButton.icon(
-                      onPressed: _isLoading || _rawContacts.isEmpty ? null : _runProcessingPipeline,
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('بدء المعالجة'),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: _rawContacts.length,
-            itemBuilder: (context, index) {
-              var c = _rawContacts[index];
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Colors.teal[50],
-                  child: Text('${index + 1}', style: const TextStyle(fontSize: 12)),
-                ),
-                title: Text(c.displayName),
-                subtitle: Text(c.phones.join(', ')),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildProcessingProgressView() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          CircularProgressIndicator(value: _progressValue, strokeWidth: 6),
-          const SizedBox(height: 20),
-          Text('${(_progressValue * 100).toStringAsFixed(1)}%', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 10),
-          Text(_statusMessage, style: const TextStyle(color: Colors.grey)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFinalReviewView() {
-    return Column(
-      children: [
-        if (_tagStats.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Wrap(
-              spacing: 8,
-              children: _tagStats.entries.map((e) => Chip(label: Text('${e.key}: ${e.value}'))).toList(),
-            ),
-          ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-          child: Text(
-            'العدد الصافي: ${_processedContacts.length} (المكررات المطلوب حذفها بعد الدمج: $_totalDuplicatesFound)',
-            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
-          child: Row(
+  Widget _buildStatBadge(String label, int count, Color color) {
+    return Expanded(
+      child: Card(
+        color: color.withOpacity(0.15),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8.0),
+          child: Column(
             children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _isLoading ? null : _syncChangesToDevice,
-                  icon: const Icon(Icons.sync),
-                  label: const Text('مزامنة وتطبيق في الهاتف'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal[700],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  await ContactsService.exportToCsv(_processedContacts, '/sdcard/Download/app_smart_contacts.csv');
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ نسخة احتياطية في مجلد Download.')));
-                },
-                icon: const Icon(Icons.save_alt),
-                label: const Text('نسخة CSV'),
-              ),
+              Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)),
+              Text('$count', style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16)),
             ],
           ),
         ),
-        const Divider(),
-        Expanded(
-          child: ListView.builder(
-            itemCount: _processedContacts.length,
-            itemBuilder: (context, index) {
-              var c = _processedContacts[index];
-              return ListTile(
-                leading: c.entityTag.isNotEmpty ? Chip(label: Text(c.entityTag)) : const Icon(Icons.person),
-                title: Text(c.displayName),
-                subtitle: Text('${c.englishName.isNotEmpty ? "EN: ${c.englishName}\n" : ""}أرقام (${c.phones.length})${c.duplicateIdsToDelete.isNotEmpty ? " • مدمج (${c.duplicateIdsToDelete.length})" : ""}: ${c.phones.join(", ")}'),
-              );
-            },
-          ),
-        ),
-      ],
+      ),
     );
+  }
+
+  Color _getStatusColor(ContactStatus status) {
+    switch (status) {
+      case ContactStatus.active: return Colors.green;
+      case ContactStatus.vip: return Colors.amber.shade800;
+      case ContactStatus.temporary: return Colors.blue;
+      case ContactStatus.candidateDelete: return Colors.red;
+    }
   }
 }
